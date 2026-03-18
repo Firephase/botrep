@@ -1,0 +1,11 @@
+# Bot Configuration Settings
+
+BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE'
+LOG_LEVEL = 'info'
+LOG_FILE = 'bot.log'
+BOT_NAME = 'YourBotName'
+BOT_VERSION = '1.0.0'
+
+# Optional API Keys
+WEATHER_API_KEY = 'YOUR_WEATHER_API_KEY_HERE'
+NEWS_API_KEY = 'YOUR_NEWS_API_KEY_HERE'
