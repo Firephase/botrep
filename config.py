@@ -1,6 +1,6 @@
 # Bot Configuration Settings
 
-BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE'
+BOT_TOKEN = '7637715655:AAHJUlqtUjUVC67xZqsVxNRh2cmkGJZVmms'
 LOG_LEVEL = 'info'
 LOG_FILE = 'bot.log'
 BOT_NAME = 'YourBotName'
