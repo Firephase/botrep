@@ -12,7 +12,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot configuration
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Replace with your bot token from @BotFather
+BOT_TOKEN = "7637715655:AAHJUlqtUjUVC67xZqsVxNRh2cmkGJZVmms"  # Replace with your bot token from @BotFather
 
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
