@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-title">Searching&hellip;</div>
+  <div class="card-sub" id="phase-label">Connecting to Telegram, please wait&hellip;</div>
+
+  <!-- Progress bar (only visible during phase 2 brute-force) -->
+  <div id="progress-wrap" style="display:none; margin-bottom:14px;">
+    <div style="display:flex;justify-content:space-between;font-size:.8rem;color:#64748b;margin-bottom:5px;">
+      <span id="progress-label">0%</span>
+      <span id="progress-found">0 found</span>
+    </div>
+    <div style="background:#e2e8f0;border-radius:99px;height:8px;overflow:hidden;">
+      <div id="progress-bar"
+           style="height:100%;background:#2563eb;border-radius:99px;width:0%;transition:width .4s;"></div>
+    </div>
+  </div>
+
+  <!-- Live log -->
+  <div id="log" style="
+    background:#0f172a; color:#94a3b8;
+    font-family:'SF Mono','Fira Code',monospace;
+    font-size:.8rem; line-height:1.6;
+    border-radius:10px; padding:16px;
+    height:340px; overflow-y:auto;
+  "></div>
+
+  <p style="font-size:.78rem;color:#94a3b8;margin-top:10px;text-align:center;">
+    The page will redirect automatically when the search finishes.
+    Phase 2 (brute-force) takes ~35–40 min due to Telegram rate limits.
+  </p>
+</div>
+
+<script>
+  const log      = document.getElementById('log');
+  const phaseLabel = document.getElementById('phase-label');
+  const progressWrap = document.getElementById('progress-wrap');
+  const progressBar  = document.getElementById('progress-bar');
+  const progressLabel = document.getElementById('progress-label');
+  const progressFound = document.getElementById('progress-found');
+
+  function appendLine(text, cls) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    if (cls) d.style.color = cls;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  const es = new EventSource('/stream');
+
+  es.onmessage = function(e) {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === 'phase') {
+      phaseLabel.textContent = msg.text;
+      appendLine('>> ' + msg.text, '#60a5fa');
+      if (msg.text.includes('2/2')) progressWrap.style.display = 'block';
+      return;
+    }
+    if (msg.type === 'log') {
+      appendLine(msg.text, null);
+      return;
+    }
+    if (msg.type === 'warn') {
+      appendLine(msg.text, '#fbbf24');
+      return;
+    }
+    if (msg.type === 'found') {
+      appendLine('  + ' + msg.text, '#34d399');
+      return;
+    }
+    if (msg.type === 'progress') {
+      progressBar.style.width  = msg.value + '%';
+      progressLabel.textContent = msg.value + '%  (' + msg.current + '/' + msg.total + ')';
+      progressFound.textContent = msg.found + ' chats found';
+      return;
+    }
+    if (msg.type === 'error') {
+      appendLine('ERROR: ' + msg.text, '#f87171');
+      phaseLabel.textContent = 'Search ended with an error.';
+      es.close();
+      return;
+    }
+    if (msg.type === 'done') {
+      appendLine('Done! Found ' + msg.count + ' unique chats/channels.', '#34d399');
+      es.close();
+      setTimeout(() => { window.location.href = '/results'; }, 1500);
+      return;
+    }
+  };
+
+  es.onerror = function() {
+    appendLine('[Connection lost — refresh the page to reconnect]', '#fbbf24');
+  };
+</script>
+{% endblock %}

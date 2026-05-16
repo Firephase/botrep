@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-title">Verification Code</div>
+  <div class="card-sub">
+    Telegram sent a 5-digit code to your phone (or to any active Telegram app on your device).
+    Enter it below.
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/verify">
+    <div class="form-group">
+      <label for="code">Verification code</label>
+      <input type="text" id="code" name="code" placeholder="12345"
+             maxlength="10" autocomplete="one-time-code" required autofocus
+             style="font-size:1.4rem;letter-spacing:.2em;text-align:center;">
+    </div>
+    <button type="submit" class="btn">Verify &amp; Start Search &rarr;</button>
+    <a href="/phone" class="btn btn-ghost" style="display:block;text-align:center;text-decoration:none;margin-top:10px">
+      &larr; Re-send code
+    </a>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-title">Phone Number</div>
+  <div class="card-sub">
+    Enter the phone number linked to your Telegram account.
+    Telegram will send a verification code to that number (or to your Telegram app).
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/phone">
+    <div class="form-group">
+      <label for="phone">Phone number</label>
+      <input type="tel" id="phone" name="phone" placeholder="+79001234567" required autofocus>
+      <div class="hint">Include country code, e.g. +7 for Russia, +1 for USA.</div>
+    </div>
+    <button type="submit" class="btn">Send Code &rarr;</button>
+    <a href="/setup" class="btn btn-ghost" style="display:block;text-align:center;text-decoration:none;margin-top:10px">
+      &larr; Back
+    </a>
+  </form>
+</div>
+{% endblock %}

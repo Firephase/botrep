@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-title">Two-Factor Authentication</div>
+  <div class="card-sub">
+    Your account has two-step verification enabled.
+    Enter your Telegram cloud password to continue.
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/2fa">
+    <div class="form-group">
+      <label for="password">Cloud password</label>
+      <input type="password" id="password" name="password"
+             placeholder="Your 2FA password" required autofocus>
+    </div>
+    <button type="submit" class="btn">Unlock &amp; Start Search &rarr;</button>
+  </form>
+</div>
+{% endblock %}

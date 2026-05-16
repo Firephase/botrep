@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="card-title">API Credentials</div>
+  <div class="card-sub">
+    Get your free API ID and Hash from
+    <a href="https://my.telegram.org" target="_blank" style="color:#2563eb">my.telegram.org</a>
+    → "API development tools". This is a one-time setup.
+  </div>
+
+  {% if error %}
+  <div class="alert alert-error">{{ error }}</div>
+  {% endif %}
+
+  <form method="POST" action="/setup">
+    <div class="form-group">
+      <label for="api_id">API ID</label>
+      <input type="number" id="api_id" name="api_id" placeholder="e.g. 12345678" required autofocus>
+      <div class="hint">A number shown on the my.telegram.org page.</div>
+    </div>
+    <div class="form-group">
+      <label for="api_hash">API Hash</label>
+      <input type="text" id="api_hash" name="api_hash" placeholder="e.g. a1b2c3d4e5f6..." required>
+      <div class="hint">The long hex string next to your API ID.</div>
+    </div>
+    <button type="submit" class="btn">Continue &rarr;</button>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Tutor Chat Finder</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f0f4f8;
+      color: #1e293b;
+      min-height: 100vh;
+      padding: 24px 16px 48px;
+    }
+
+    .container { max-width: 700px; margin: 0 auto; }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header { text-align: center; padding: 28px 0 20px; }
+    header h1 { font-size: 1.55rem; font-weight: 700; letter-spacing: -.01em; }
+    header p  { color: #64748b; margin-top: 5px; font-size: 0.88rem; }
+
+    /* ── Stepper ─────────────────────────────────────────────── */
+    .stepper {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 28px;
+    }
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+    }
+    .step-circle {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.78rem; font-weight: 700;
+      transition: background .3s;
+    }
+    .step-circle.done   { background: #10b981; color: #fff; }
+    .step-circle.active { background: #2563eb; color: #fff; }
+    .step-circle.future { background: #e2e8f0; color: #94a3b8; }
+    .step-label { font-size: 0.68rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .04em; }
+    .step-label.active { color: #2563eb; font-weight: 600; }
+    .step-connector {
+      width: 52px; height: 2px;
+      background: #e2e8f0;
+      margin-bottom: 22px;
+      transition: background .3s;
+    }
+    .step-connector.done { background: #10b981; }
+
+    /* ── Card ────────────────────────────────────────────────── */
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.07), 0 4px 16px rgba(0,0,0,.04);
+      padding: 36px 32px;
+    }
+    .card-title {
+      font-size: 1.1rem; font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .card-sub {
+      color: #64748b; font-size: 0.86rem;
+      margin-bottom: 24px; line-height: 1.5;
+    }
+
+    /* ── Form ────────────────────────────────────────────────── */
+    .form-group { margin-bottom: 18px; }
+    label { display: block; font-size: 0.84rem; font-weight: 500; margin-bottom: 6px; color: #374151; }
+    input[type=text], input[type=password], input[type=tel], input[type=number] {
+      width: 100%; padding: 10px 13px;
+      border: 1.5px solid #e2e8f0; border-radius: 8px;
+      font-size: 0.93rem; outline: none;
+      transition: border-color .15s, box-shadow .15s;
+      background: #fafafa;
+    }
+    input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+      background: #fff;
+    }
+    .hint { font-size: 0.78rem; color: #94a3b8; margin-top: 5px; }
+    .hint a { color: #2563eb; }
+
+    /* ── Button ──────────────────────────────────────────────── */
+    .btn {
+      display: inline-block; width: 100%;
+      padding: 11px 20px;
+      background: #2563eb; color: #fff;
+      border: none; border-radius: 9px;
+      font-size: 0.95rem; font-weight: 600;
+      cursor: pointer; text-align: center;
+      transition: background .15s, transform .1s;
+      margin-top: 4px;
+    }
+    .btn:hover  { background: #1d4ed8; }
+    .btn:active { transform: scale(.99); }
+    .btn-ghost {
+      background: none; color: #64748b;
+      border: 1.5px solid #e2e8f0;
+      margin-top: 10px;
+    }
+    .btn-ghost:hover { background: #f8fafc; border-color: #cbd5e1; }
+
+    /* ── Alert ───────────────────────────────────────────────── */
+    .alert {
+      padding: 11px 14px; border-radius: 8px;
+      margin-bottom: 18px; font-size: 0.87rem; line-height: 1.4;
+    }
+    .alert-error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+    .alert-info  { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .alert-ok    { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>Telegram Tutor Chat Finder</h1>
+    <p>Finds public chats &amp; channels for math tutoring and exam prep</p>
+  </header>
+
+  <!-- Stepper -->
+  {% set steps = [("Setup","1"), ("Phone","2"), ("Code","3"), ("Search","4"), ("Results","5")] %}
+  <div class="stepper">
+    {% for label, n in steps %}
+      {% set n_int = n | int %}
+      {% if not loop.first %}
+        <div class="step-connector {% if current_step > n_int %}done{% endif %}"></div>
+      {% endif %}
+      <div class="step">
+        <div class="step-circle
+          {% if current_step > n_int %}done
+          {% elif current_step == n_int %}active
+          {% else %}future{% endif %}">
+          {% if current_step > n_int %}&#10003;{% else %}{{ n_int }}{% endif %}
+        </div>
+        <div class="step-label {% if current_step == n_int %}active{% endif %}">{{ label }}</div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% block content %}{% endblock %}
+
+</div>
+</body>
+</html>

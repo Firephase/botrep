@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .results-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .count-badge {
+    background: #eff6ff; color: #2563eb;
+    border: 1px solid #bfdbfe;
+    border-radius: 99px; padding: 4px 14px;
+    font-size: .83rem; font-weight: 700;
+  }
+  .dl-btn {
+    display: inline-block; padding: 8px 18px;
+    background: #2563eb; color: #fff;
+    border-radius: 8px; font-size: .85rem; font-weight: 600;
+    text-decoration: none;
+    transition: background .15s;
+  }
+  .dl-btn:hover { background: #1d4ed8; }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  th {
+    text-align: left; padding: 9px 12px;
+    background: #f8fafc; color: #64748b;
+    font-size: .74rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em;
+    border-bottom: 1.5px solid #e2e8f0;
+  }
+  td { padding: 10px 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+  tr:hover td { background: #f8fafc; }
+
+  .badge {
+    display: inline-block; padding: 2px 9px;
+    border-radius: 99px; font-size: .73rem; font-weight: 600; white-space: nowrap;
+  }
+  .badge-channel    { background: #dbeafe; color: #1d4ed8; }
+  .badge-supergroup { background: #dcfce7; color: #15803d; }
+  .badge-group      { background: #fef9c3; color: #a16207; }
+
+  a.tg-link { color: #2563eb; text-decoration: none; font-weight: 500; }
+  a.tg-link:hover { text-decoration: underline; }
+
+  .members { color: #64748b; font-variant-numeric: tabular-nums; }
+
+  .empty-state {
+    text-align: center; padding: 48px 0;
+    color: #94a3b8; font-size: .95rem;
+  }
+
+  .restart-link {
+    display: inline-block; margin-top: 20px;
+    color: #64748b; font-size: .83rem; text-decoration: none;
+  }
+  .restart-link:hover { color: #2563eb; }
+</style>
+
+<div class="card">
+  <div class="results-bar">
+    <div>
+      <div class="card-title" style="margin-bottom:4px;">Results</div>
+      <span class="count-badge">{{ results | length }} chats found</span>
+    </div>
+    {% if results %}
+    <a href="/download" class="dl-btn">&#8595; Download TXT</a>
+    {% endif %}
+  </div>
+
+  {% if results %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Title</th>
+          <th>Type</th>
+          <th>Members</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results | sort(attribute='members', reverse=True) %}
+        <tr>
+          <td style="color:#94a3b8;width:36px;">{{ loop.index }}</td>
+          <td style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+              title="{{ r.title }}">{{ r.title }}</td>
+          <td>
+            <span class="badge badge-{{ r.kind }}">{{ r.kind }}</span>
+          </td>
+          <td class="members">
+            {% if r.members is not none %}
+              {{ "{:,}".format(r.members) }}
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td>
+            <a class="tg-link" href="{{ r.link }}" target="_blank" rel="noopener">
+              {% if r.username %}@{{ r.username }}{% else %}Open{% endif %}
+            </a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    No chats were found. Try adjusting the seed keywords in <code>app.py</code>.
+  </div>
+  {% endif %}
+
+  <div style="text-align:center;">
+    <a href="/restart" class="restart-link">&#8635; Run a new search</a>
+  </div>
+</div>
+{% endblock %}
