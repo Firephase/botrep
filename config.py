@@ -1,11 +1,42 @@
-# Bot Configuration Settings
+import os
+from dataclasses import dataclass, field
 
-BOT_TOKEN = '7637715655:AAHJUlqtUjUVC67xZqsVxNRh2cmkGJZVmms'
-LOG_LEVEL = 'info'
-LOG_FILE = 'bot.log'
-BOT_NAME = 'YourBotName'
-BOT_VERSION = '1.0.0'
 
-# Optional API Keys
-WEATHER_API_KEY = 'YOUR_WEATHER_API_KEY_HERE'
-NEWS_API_KEY = 'YOUR_NEWS_API_KEY_HERE'
+@dataclass
+class Config:
+    telegram_token: str
+    yougile_api_key: str
+    yougile_board_id: str
+    yougile_project_key: str
+    db_path: str
+    log_level: str
+    allowed_chat_ids: list[int]
+    large_range_limit: int
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        raw = os.getenv("ALLOWED_CHAT_IDS", "")
+        chat_ids = [int(x.strip()) for x in raw.split(",") if x.strip().lstrip("-").isdigit()]
+        return cls(
+            telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            yougile_api_key=os.getenv("YOUGILE_API_KEY", ""),
+            yougile_board_id=os.getenv("YOUGILE_BOARD_ID", ""),
+            yougile_project_key=os.getenv("YOUGILE_PROJECT_KEY", "default"),
+            db_path=os.getenv("DB_PATH", "data/bot.db"),
+            log_level=os.getenv("LOG_LEVEL", "INFO"),
+            allowed_chat_ids=chat_ids,
+            large_range_limit=int(os.getenv("LARGE_RANGE_LIMIT", "50")),
+        )
+
+    def validate(self) -> None:
+        missing = [
+            name
+            for name, val in [
+                ("TELEGRAM_BOT_TOKEN", self.telegram_token),
+                ("YOUGILE_API_KEY", self.yougile_api_key),
+                ("YOUGILE_BOARD_ID", self.yougile_board_id),
+            ]
+            if not val
+        ]
+        if missing:
+            raise ValueError("Не заданы переменные окружения: " + ", ".join(missing))

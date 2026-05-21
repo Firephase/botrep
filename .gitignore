@@ -1,9 +1,11 @@
+.env
+data/
 __pycache__/
 *.pyc
+*.pyo
+.DS_Store
+*.egg-info/
+.venv/
 venv/
-.env
 .idea/
 .vscode/
-*.log
-# Bot-specific files
-bot_data/

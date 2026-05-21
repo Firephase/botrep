@@ -1,0 +1,109 @@
+import logging
+from typing import Any
+
+import httpx
+
+logger = logging.getLogger(__name__)
+_BASE = "https://ru.yougile.com/api-v2"
+
+
+class YouGileError(Exception):
+    pass
+
+
+class YouGileClient:
+    def __init__(self, api_key: str) -> None:
+        self._key = api_key
+        self._http: httpx.AsyncClient | None = None
+
+    async def start(self) -> None:
+        self._http = httpx.AsyncClient(
+            base_url=_BASE,
+            headers={"Authorization": f"Bearer {self._key}"},
+            timeout=30,
+        )
+
+    async def stop(self) -> None:
+        if self._http:
+            await self._http.aclose()
+            self._http = None
+
+    # ── low-level ──────────────────────────────────────────────────────────
+
+    async def _get(self, path: str, **params: Any) -> Any:
+        assert self._http, "Client not started"
+        filtered = {k: v for k, v in params.items() if v is not None}
+        r = await self._http.get(path, params=filtered)
+        if not r.is_success:
+            raise YouGileError(f"GET {path} → {r.status_code}: {r.text[:400]}")
+        return r.json()
+
+    async def _put(self, path: str, body: dict) -> Any:
+        assert self._http
+        r = await self._http.put(path, json=body)
+        if not r.is_success:
+            raise YouGileError(f"PUT {path} → {r.status_code}: {r.text[:400]}")
+        return r.json()
+
+    async def _post(self, path: str, body: dict) -> Any:
+        assert self._http
+        r = await self._http.post(path, json=body)
+        if not r.is_success:
+            raise YouGileError(f"POST {path} → {r.status_code}: {r.text[:400]}")
+        return r.json()
+
+    @staticmethod
+    def _list(data: Any) -> list[dict]:
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("content", "data", "items"):
+                if isinstance(data.get(key), list):
+                    return data[key]
+        return []
+
+    # ── public API ─────────────────────────────────────────────────────────
+
+    async def test_connection(self) -> str:
+        try:
+            data = await self._get("/company")
+            name = data.get("title") or data.get("name") or "OK"
+            return f"компания: {name}"
+        except YouGileError:
+            projs = await self.get_projects()
+            return f"проектов доступно: {len(projs)}"
+
+    async def get_projects(self) -> list[dict]:
+        return self._list(await self._get("/projects"))
+
+    async def get_boards(self, project_id: str) -> list[dict]:
+        return self._list(await self._get("/string-boards", projectId=project_id))
+
+    async def get_columns(self, board_id: str) -> list[dict]:
+        # Some YouGile versions return columns inside the board object
+        try:
+            data = await self._get(f"/string-boards/{board_id}")
+            if isinstance(data, dict) and isinstance(data.get("columns"), list):
+                return data["columns"]
+        except YouGileError:
+            pass
+        return self._list(await self._get("/string-board-columns", boardId=board_id))
+
+    async def get_tasks(self, board_id: str) -> list[dict]:
+        tasks: list[dict] = []
+        page = 0
+        while True:
+            batch = self._list(
+                await self._get("/string-board-tasks", boardId=board_id, page=page, count=100)
+            )
+            tasks.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return tasks
+
+    async def move_task(self, task_id: str, column_id: str) -> dict:
+        return await self._put(f"/tasks/{task_id}", {"columnId": column_id})
+
+    async def add_comment(self, task_id: str, text: str) -> dict:
+        return await self._post(f"/task-chats/{task_id}", {"text": text})
