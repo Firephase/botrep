@@ -12,6 +12,7 @@ from telegram.ext import Application
 from config import Config
 from database import Database
 from handlers import register
+from llm import QwenClient
 from sync_engine import SyncEngine
 from yougile import YouGileClient
 
@@ -124,11 +125,16 @@ def main() -> None:
     db = Database(cfg.db_path)
     yougile = YouGileClient(cfg.yougile_api_key)
     engine = SyncEngine(yougile, db, cfg.yougile_board_id, cfg.yougile_project_key)
+    qwen = QwenClient(cfg.qwen_api_key, cfg.qwen_model) if cfg.qwen_api_key else None
 
     async def on_startup(_app: Application) -> None:
         await db.init()
         await yougile.start()
         logger.info("YouGile: %s", await yougile.test_connection())
+        if qwen:
+            await qwen.start()
+            _app.bot_data["qwen"] = qwen
+            logger.info("Qwen API подключён (модель: %s)", cfg.qwen_model)
         try:
             n = await engine.sync_board()
             logger.info("Начальная синхронизация: %d кадров", n)
@@ -137,6 +143,8 @@ def main() -> None:
 
     async def on_shutdown(_app: Application) -> None:
         await yougile.stop()
+        if qwen:
+            await qwen.stop()
 
     app = (
         Application.builder()

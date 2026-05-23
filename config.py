@@ -12,6 +12,8 @@ class Config:
     log_level: str
     allowed_chat_ids: list[int]
     large_range_limit: int
+    qwen_api_key: str = ""
+    qwen_model: str = "qwen-plus"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -26,6 +28,8 @@ class Config:
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             allowed_chat_ids=chat_ids,
             large_range_limit=int(os.getenv("LARGE_RANGE_LIMIT", "50")),
+            qwen_api_key=os.getenv("QWEN_API_KEY", ""),
+            qwen_model=os.getenv("QWEN_MODEL", "qwen-plus"),
         )
 
     def validate(self) -> None:

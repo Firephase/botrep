@@ -14,6 +14,7 @@ from telegram.ext import (
     filters,
 )
 
+from llm import LLMError, QwenClient
 from parser import ParsedEvent, STATUS_ALIASES, fmt_frames, parse_message
 from sync_engine import SyncEngine
 
@@ -73,12 +74,14 @@ def register(
     app.add_handler(CommandHandler("desc", _cmd_desc))
     app.add_handler(CommandHandler("assign", _cmd_assign))
     app.add_handler(CommandHandler("deadline", _cmd_deadline))
+    app.add_handler(CommandHandler("qwen", _cmd_qwen))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
 
     app.add_handler(CallbackQueryHandler(_cb_move, pattern=r"^mv:"))
     app.add_handler(CallbackQueryHandler(_cb_delete, pattern=r"^dl:"))
     app.add_handler(CallbackQueryHandler(_cb_assign, pattern=r"^as:"))
+    app.add_handler(CallbackQueryHandler(_cb_qwen_confirm, pattern=r"^qw:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
 
@@ -538,6 +541,153 @@ async def _cb_assign(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             lines.append(f"Кадр {frame}: {e}")
     await query.edit_message_text("Исполнитель:\n" + "\n".join(lines))
+
+
+def _event_summary(event: ParsedEvent) -> str:
+    action_labels = {
+        "move": "Переместить",
+        "delete": "Удалить",
+        "add": "Создать задачу",
+        "comment_only": "Комментарий",
+        "describe": "Описание",
+    }
+    lines = [f"Действие: {action_labels.get(event.action, event.action)}"]
+    if event.frames:
+        lines.append(f"Кадры: {fmt_frames(event.frames)}")
+    if event.target_status:
+        lines.append(f"Статус: {event.target_status}")
+    if event.extra_text:
+        lines.append(f"Текст: {event.extra_text}")
+    return "\n".join(lines)
+
+
+async def _execute_event(
+    reply_fn,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    event: ParsedEvent,
+) -> None:
+    engine = _engine(ctx)
+
+    if event.action == "move":
+        result = await engine.process_event(event)
+        await reply_fn(result.summary())
+        return
+
+    if event.action == "delete":
+        lines: list[str] = []
+        for frame in event.frames:
+            try:
+                title = await engine.delete_frame(frame)
+                lines.append(f"{title} удалён")
+            except Exception as e:
+                lines.append(f"Кадр {frame}: {e}")
+        await reply_fn("\n".join(lines) or "Готово")
+        return
+
+    if event.action == "add":
+        title = event.extra_text or event.comment
+        try:
+            task = await engine.create_task_with_title(title)
+            await reply_fn(f"Задача создана: «{title}» (id: {task.get('id', '?')})")
+        except Exception as e:
+            await reply_fn(f"Ошибка: {e}")
+        return
+
+    if event.action == "comment_only":
+        lines = []
+        for frame in event.frames:
+            try:
+                await engine.comment_frame(frame, event.extra_text or event.comment)
+                lines.append(f"Кадр {frame}: комментарий добавлен")
+            except Exception as e:
+                lines.append(f"Кадр {frame}: {e}")
+        await reply_fn("\n".join(lines))
+        return
+
+    if event.action == "describe":
+        frame = event.frames[0] if event.frames else None
+        if frame is None:
+            await reply_fn("Не найден номер кадра для описания.")
+            return
+        try:
+            await engine.update_description(frame, event.extra_text or event.comment)
+            await reply_fn(f"Описание кадра {frame} обновлено.")
+        except Exception as e:
+            await reply_fn(f"Ошибка: {e}")
+
+
+# ── /qwen ──────────────────────────────────────────────────────────────────
+
+async def _cmd_qwen(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+
+    qwen: QwenClient | None = ctx.bot_data.get("qwen")
+    if not qwen:
+        await update.message.reply_text(
+            "QWEN_API_KEY не задан. Добавьте в .env и перезапустите бот."
+        )
+        return
+
+    text = " ".join(ctx.args) if ctx.args else ""
+    if not text:
+        await update.message.reply_text("Использование: /qwen <текст сообщения>")
+        return
+
+    msg = await update.message.reply_text("Анализирую через Qwen...")
+    try:
+        event = await qwen.parse(text)
+    except LLMError as e:
+        await msg.edit_text(f"Ошибка Qwen:\n{e}")
+        return
+
+    if not event.frames and event.action in ("move", "delete", "comment_only", "describe"):
+        await msg.edit_text(
+            f"Qwen не нашёл номера кадров в тексте.\n"
+            f"Распознал: действие={event.action}, статус={event.target_status}"
+        )
+        return
+
+    summary = _event_summary(event)
+    token = _store(ctx, {
+        "frames": event.frames,
+        "target_status": event.target_status,
+        "comment": event.comment,
+        "action": event.action,
+        "extra_text": event.extra_text,
+    })
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Выполнить", callback_data=f"qw:{token}"),
+        InlineKeyboardButton("Отмена", callback_data=_CB_CANCEL),
+    ]])
+    await msg.edit_text(f"Qwen распознал:\n{summary}\n\nВыполнить?", reply_markup=kb)
+
+
+async def _cb_qwen_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    token = query.data[len("qw:"):]
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла, повторите /qwen.")
+        return
+
+    event = ParsedEvent(
+        frames=data["frames"],
+        target_status=data["target_status"],
+        comment=data["comment"],
+        action=data["action"],
+        extra_text=data["extra_text"],
+        confidence=0.9,
+    )
+
+    await query.edit_message_text("Выполняю...")
+    await _execute_event(
+        lambda text: query.edit_message_text(text),
+        ctx,
+        event,
+    )
 
 
 async def _cb_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
