@@ -119,7 +119,12 @@ print("=" * 55)
 r = get("/string-stickers", boardId=BOARD_ID)
 if r.ok:
     existing_tasks = content(r)
-    existing_task_titles = {t.get("title", "") for t in existing_tasks}
+    existing_task_titles = {t.get("name") or t.get("title", "") for t in existing_tasks}
+    # Показываем структуру первого стикера чтобы понять поля
+    if existing_tasks:
+        print("Структура стикера (первый):")
+        import json as _json
+        print(_json.dumps(existing_tasks[0], ensure_ascii=False, indent=2)[:600])
 else:
     print(f"Не удалось получить карточки: {r.status_code} — {r.text[:150]}")
     existing_task_titles = set()
@@ -146,15 +151,35 @@ for i in range(1, FRAME_COUNT + 1):
         errors += 1
         continue
 
-    # Помещаем в колонку Бэклог через states
-    rs = post(f"/string-stickers/{sticker_id}/states", {"columnId": backlog_id})
+    # Пробуем назначить колонку разными способами
+    import requests as _req
+    placed = False
+
+    # Способ 1: PUT /string-stickers/{id}
+    rs = _req.put(f"{BASE}/string-stickers/{sticker_id}",
+                  headers=H, json={"columnId": backlog_id}, timeout=15)
     if rs.ok:
-        print(f"  {title}: создана ✓")
-        created += 1
-    else:
-        # Если states не работает — стикер всё равно создан, просто без колонки
-        print(f"  {title}: создана (колонка не задана: {rs.status_code} — {rs.text[:100]})")
-        created += 1
+        print(f"  {title}: создана ✓ (PUT columnId)")
+        placed = True
+
+    # Способ 2: POST /string-stickers/{id}/states с name=column_title
+    if not placed:
+        rs = post(f"/string-stickers/{sticker_id}/states", {"name": "Бэклог"})
+        if rs.ok:
+            print(f"  {title}: создана ✓ (states name)")
+            placed = True
+
+    # Способ 3: POST /string-stickers/{id}/states с id колонки как name
+    if not placed:
+        rs = post(f"/string-stickers/{sticker_id}/states", {"name": backlog_id})
+        if rs.ok:
+            print(f"  {title}: создана ✓ (states id)")
+            placed = True
+
+    if not placed:
+        print(f"  {title}: создана (без колонки, PUT:{rs.status_code} — {rs.text[:80]})")
+
+    created += 1
 
 print(f"\nГотово. Создано: {created}, пропущено: {skipped}, ошибок: {errors}")
 print(f"\n*** Не забудь обновить YOUGILE_BOARD_ID={BOARD_ID} в .env на VPS ***")
