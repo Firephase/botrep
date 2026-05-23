@@ -112,21 +112,43 @@ if not backlog_id:
     sys.exit(1)
 
 # ── шаг 3: создаём карточки ────────────────────────────────────────────────
+import json as _json
+import requests as _req
+
+# ── удаляем ошибочно созданные string-stickers ─────────────────────────────
 print("\n" + "=" * 55)
-print("Шаг 3: создаём карточки")
+print("Шаг 3а: удаляем ошибочные sticker-типы")
 print("=" * 55)
 
-r = get("/string-stickers", boardId=BOARD_ID)
+rs = get("/string-stickers")
+if rs.ok:
+    bad = [s for s in content(rs)
+           if (s.get("name") or "").startswith(PROJECT_NAME)]
+    if bad:
+        for s in bad:
+            rd = _req.delete(f"{BASE}/string-stickers/{s['id']}", headers=H, timeout=15)
+            status = "удалён" if rd.ok else f"ошибка {rd.status_code}"
+            print(f"  {s['name']}: {status}")
+    else:
+        print("  Нечего удалять.")
+else:
+    print(f"  Не удалось получить список: {rs.status_code}")
+
+# ── создаём реальные задачи через /tasks ───────────────────────────────────
+print("\n" + "=" * 55)
+print("Шаг 3б: создаём задачи (/tasks)")
+print("=" * 55)
+
+# Смотрим что уже есть в задачах
+r = get("/tasks", columnId=backlog_id)
 if r.ok:
     existing_tasks = content(r)
-    existing_task_titles = {t.get("name") or t.get("title", "") for t in existing_tasks}
-    # Показываем структуру первого стикера чтобы понять поля
     if existing_tasks:
-        print("Структура стикера (первый):")
-        import json as _json
-        print(_json.dumps(existing_tasks[0], ensure_ascii=False, indent=2)[:600])
+        print("Структура задачи (первая):")
+        print(_json.dumps(existing_tasks[0], ensure_ascii=False, indent=2)[:400])
+    existing_task_titles = {t.get("title") or t.get("name", "") for t in existing_tasks}
 else:
-    print(f"Не удалось получить карточки: {r.status_code} — {r.text[:150]}")
+    print(f"GET /tasks: {r.status_code} — {r.text[:150]}")
     existing_task_titles = set()
 
 created = skipped = errors = 0
@@ -138,48 +160,19 @@ for i in range(1, FRAME_COUNT + 1):
         skipped += 1
         continue
 
-    # Создаём стикер — только name, остальное через states
-    r = post("/string-stickers", {"name": title})
+    # Пробуем создать задачу — YouGile может требовать title или name
+    body = {"title": title, "columnId": backlog_id}
+    r = post("/tasks", body)
     if not r.ok:
-        print(f"  {title}: ОШИБКА создания {r.status_code} — {r.text[:150]}")
+        # Попробуем name вместо title
+        body2 = {"name": title, "columnId": backlog_id}
+        r = post("/tasks", body2)
+    if r.ok:
+        print(f"  {title}: создана ✓")
+        created += 1
+    else:
+        print(f"  {title}: ОШИБКА {r.status_code} — {r.text[:150]}")
         errors += 1
-        continue
-
-    sticker_id = r.json().get("id")
-    if not sticker_id:
-        print(f"  {title}: нет id в ответе — {r.text[:100]}")
-        errors += 1
-        continue
-
-    # Пробуем назначить колонку разными способами
-    import requests as _req
-    placed = False
-
-    # Способ 1: PUT /string-stickers/{id}
-    rs = _req.put(f"{BASE}/string-stickers/{sticker_id}",
-                  headers=H, json={"columnId": backlog_id}, timeout=15)
-    if rs.ok:
-        print(f"  {title}: создана ✓ (PUT columnId)")
-        placed = True
-
-    # Способ 2: POST /string-stickers/{id}/states с name=column_title
-    if not placed:
-        rs = post(f"/string-stickers/{sticker_id}/states", {"name": "Бэклог"})
-        if rs.ok:
-            print(f"  {title}: создана ✓ (states name)")
-            placed = True
-
-    # Способ 3: POST /string-stickers/{id}/states с id колонки как name
-    if not placed:
-        rs = post(f"/string-stickers/{sticker_id}/states", {"name": backlog_id})
-        if rs.ok:
-            print(f"  {title}: создана ✓ (states id)")
-            placed = True
-
-    if not placed:
-        print(f"  {title}: создана (без колонки, PUT:{rs.status_code} — {rs.text[:80]})")
-
-    created += 1
 
 print(f"\nГотово. Создано: {created}, пропущено: {skipped}, ошибок: {errors}")
 print(f"\n*** Не забудь обновить YOUGILE_BOARD_ID={BOARD_ID} в .env на VPS ***")
