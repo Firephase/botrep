@@ -99,11 +99,17 @@ class YouGileClient:
 
     async def add_comment(self, task_id: str, text: str) -> dict:
         task = await self._get(f"/tasks/{task_id}")
-        chat_id = (
-            task.get("chatId")
-            or task.get("chat", {}).get("id")
-            or task.get("taskChat", {}).get("id")
-        )
-        if not chat_id:
-            raise YouGileError(f"У задачи {task_id} нет chatId. Поля: {list(task.keys())}")
-        return await self._post(f"/chats/{chat_id}/messages", {"text": text})
+        # Try candidates for chatId in priority order
+        for chat_id in [
+            task.get("chatId"),
+            task.get("idTaskCommon"),
+            task.get("idTaskProject"),
+            task_id,
+        ]:
+            if not chat_id:
+                continue
+            try:
+                return await self._post(f"/chats/{chat_id}/messages", {"text": text})
+            except YouGileError:
+                continue
+        raise YouGileError(f"Не удалось найти чат задачи {task_id}")
