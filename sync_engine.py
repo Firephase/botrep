@@ -114,12 +114,18 @@ class SyncEngine:
 
             try:
                 await self._yougile.move_task(row["task_id"], col_id)
-                await self._yougile.add_comment(row["task_id"], event.comment)
                 await self._db.update_task_status(row["task_id"], col_id, event.target_status)
                 result.updated.append(frame)
             except YouGileError as e:
                 logger.error("Кадр %d (task %s): %s", frame, row["task_id"], e)
                 result.errors[frame] = str(e)
+                continue
+
+            # Комментарий нефатален — карточка уже перемещена
+            try:
+                await self._yougile.add_comment(row["task_id"], event.comment)
+            except YouGileError as e:
+                logger.warning("Кадр %d — комментарий не добавлен: %s", frame, e)
 
         return result
 
