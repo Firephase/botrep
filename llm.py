@@ -8,7 +8,7 @@ from parser import ParsedEvent, STATUS_ALIASES
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 _STATUSES = ", ".join(STATUS_ALIASES.keys())
 
 _SYSTEM = f"""Ты ассистент для управления задачами Kanban-доски видеопродакшна.
