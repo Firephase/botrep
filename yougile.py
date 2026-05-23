@@ -77,24 +77,17 @@ class YouGileClient:
         return self._list(await self._get("/projects"))
 
     async def get_boards(self, project_id: str) -> list[dict]:
-        return self._list(await self._get("/string-boards", projectId=project_id))
+        return self._list(await self._get("/boards", projectId=project_id))
 
     async def get_columns(self, board_id: str) -> list[dict]:
-        # Some YouGile versions return columns inside the board object
-        try:
-            data = await self._get(f"/string-boards/{board_id}")
-            if isinstance(data, dict) and isinstance(data.get("columns"), list):
-                return data["columns"]
-        except YouGileError:
-            pass
-        return self._list(await self._get("/string-board-columns", boardId=board_id))
+        return self._list(await self._get("/columns", boardId=board_id))
 
     async def get_tasks(self, board_id: str) -> list[dict]:
         tasks: list[dict] = []
         page = 0
         while True:
             batch = self._list(
-                await self._get("/string-board-tasks", boardId=board_id, page=page, count=100)
+                await self._get("/string-stickers", boardId=board_id, page=page, count=100)
             )
             tasks.extend(batch)
             if len(batch) < 100:
@@ -103,7 +96,7 @@ class YouGileClient:
         return tasks
 
     async def move_task(self, task_id: str, column_id: str) -> dict:
-        return await self._put(f"/tasks/{task_id}", {"columnId": column_id})
+        return await self._put(f"/string-stickers/{task_id}", {"columnId": column_id})
 
     async def add_comment(self, task_id: str, text: str) -> dict:
-        return await self._post(f"/task-chats/{task_id}", {"text": text})
+        return await self._post(f"/tasks/{task_id}/messages", {"text": text})
