@@ -132,13 +132,29 @@ for i in range(1, FRAME_COUNT + 1):
         print(f"  {title}: уже есть")
         skipped += 1
         continue
-    r = post("/string-stickers", {"title": title, "columnId": backlog_id})
-    if r.ok:
-        print(f"  {title}: создана")
+
+    # Создаём стикер (поле name, без columnId)
+    r = post("/string-stickers", {"name": title, "boardId": BOARD_ID})
+    if not r.ok:
+        print(f"  {title}: ОШИБКА создания {r.status_code} — {r.text[:150]}")
+        errors += 1
+        continue
+
+    sticker_id = r.json().get("id")
+    if not sticker_id:
+        print(f"  {title}: нет id в ответе — {r.text[:100]}")
+        errors += 1
+        continue
+
+    # Помещаем в колонку Бэклог через states
+    rs = post(f"/string-stickers/{sticker_id}/states", {"columnId": backlog_id})
+    if rs.ok:
+        print(f"  {title}: создана ✓")
         created += 1
     else:
-        print(f"  {title}: ОШИБКА {r.status_code} — {r.text[:150]}")
-        errors += 1
+        # Если states не работает — стикер всё равно создан, просто без колонки
+        print(f"  {title}: создана (колонка не задана: {rs.status_code} — {rs.text[:100]})")
+        created += 1
 
 print(f"\nГотово. Создано: {created}, пропущено: {skipped}, ошибок: {errors}")
 print(f"\n*** Не забудь обновить YOUGILE_BOARD_ID={BOARD_ID} в .env на VPS ***")

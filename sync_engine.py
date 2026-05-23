@@ -66,7 +66,7 @@ class SyncEngine:
 
         synced = 0
         for task in tasks:
-            frame = _frame_from_title(task.get("title", ""))
+            frame = _frame_from_title(task.get("name") or task.get("title", ""))
             if frame is None:
                 continue
             col_id = task.get("columnId", "")
@@ -126,7 +126,7 @@ class SyncEngine:
     async def _search_and_cache(self, frame: int) -> dict | None:
         tasks = await self._yougile.get_tasks(self._board_id)
         for task in tasks:
-            if _frame_from_title(task.get("title", "")) == frame:
+            if _frame_from_title(task.get("name") or task.get("title", "")) == frame:
                 await self._db.upsert_task(self._project_key, frame, task["id"])
                 return await self._db.get_task(self._project_key, frame)
         return None

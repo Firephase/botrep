@@ -96,7 +96,7 @@ class YouGileClient:
         return tasks
 
     async def move_task(self, task_id: str, column_id: str) -> dict:
-        return await self._put(f"/string-stickers/{task_id}", {"columnId": column_id})
+        return await self._post(f"/string-stickers/{task_id}/states", {"columnId": column_id})
 
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/tasks/{task_id}/messages", {"text": text})
