@@ -133,8 +133,8 @@ for i in range(1, FRAME_COUNT + 1):
         skipped += 1
         continue
 
-    # Создаём стикер (поле name, без columnId)
-    r = post("/string-stickers", {"name": title, "boardId": BOARD_ID})
+    # Создаём стикер — только name, остальное через states
+    r = post("/string-stickers", {"name": title})
     if not r.ok:
         print(f"  {title}: ОШИБКА создания {r.status_code} — {r.text[:150]}")
         errors += 1
