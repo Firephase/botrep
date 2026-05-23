@@ -83,20 +83,19 @@ class YouGileClient:
         return self._list(await self._get("/columns", boardId=board_id))
 
     async def get_tasks(self, board_id: str) -> list[dict]:
-        tasks: list[dict] = []
-        page = 0
-        while True:
-            batch = self._list(
-                await self._get("/string-stickers", boardId=board_id, page=page, count=100)
-            )
-            tasks.extend(batch)
-            if len(batch) < 100:
-                break
-            page += 1
-        return tasks
+        # Collect tasks from every column of the board
+        cols = await self.get_columns(board_id)
+        all_tasks: list[dict] = []
+        for col in cols:
+            try:
+                batch = self._list(await self._get("/tasks", columnId=col["id"]))
+                all_tasks.extend(batch)
+            except YouGileError as e:
+                logger.warning("Колонка %s: %s", col.get("title"), e)
+        return all_tasks
 
     async def move_task(self, task_id: str, column_id: str) -> dict:
-        return await self._post(f"/string-stickers/{task_id}/states", {"columnId": column_id})
+        return await self._put(f"/tasks/{task_id}", {"columnId": column_id})
 
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/tasks/{task_id}/messages", {"text": text})
