@@ -75,6 +75,14 @@ class Database:
             )
             await db.commit()
 
+    async def delete_task(self, project_key: str, frame: int) -> None:
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "DELETE FROM tasks WHERE project_key = ? AND frame = ?",
+                (project_key, frame),
+            )
+            await db.commit()
+
     async def log_sync(self, board_id: str, task_count: int) -> None:
         async with aiosqlite.connect(self.path) as db:
             await db.execute(

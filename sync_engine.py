@@ -121,7 +121,6 @@ class SyncEngine:
                 result.errors[frame] = str(e)
                 continue
 
-            # Комментарий нефатален — карточка уже перемещена
             try:
                 await self._yougile.add_comment(row["task_id"], event.comment)
             except YouGileError as e:
@@ -139,3 +138,59 @@ class SyncEngine:
 
     def get_column_names(self) -> list[str]:
         return list(self._columns)
+
+    # ── new operations ─────────────────────────────────────────────────────
+
+    async def delete_frame(self, frame: int) -> str:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден ни в кэше, ни в YouGile")
+        await self._yougile.delete_task(row["task_id"])
+        await self._db.delete_task(self._project_key, frame)
+        return f"Кадр {frame:02d}"
+
+    async def create_task_with_title(self, title: str) -> dict:
+        col_id = self._columns.get("Бэклог", "")
+        if not col_id:
+            await self.sync_board()
+            col_id = self._columns.get("Бэклог", "")
+        if not col_id:
+            raise ValueError("Колонка «Бэклог» не найдена на доске")
+        task = await self._yougile.create_task(col_id, title)
+        frame = _frame_from_title(title)
+        if frame:
+            await self._db.upsert_task(self._project_key, frame, task["id"], col_id, "Бэклог")
+        return task
+
+    async def update_description(self, frame: int, description: str) -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.update_task(row["task_id"], description=description)
+
+    async def comment_frame(self, frame: int, text: str) -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.add_comment(row["task_id"], text)
+
+    async def get_users(self) -> list[dict]:
+        return await self._yougile.get_users()
+
+    async def set_assignee(self, frame: int, user_id: str) -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.update_task(row["task_id"], assigned=[user_id])
+
+    async def set_deadline(self, frame: int, ts_ms: int) -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.update_task(row["task_id"], deadline=ts_ms)

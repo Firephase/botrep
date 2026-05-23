@@ -52,6 +52,16 @@ class YouGileClient:
             raise YouGileError(f"POST {path} → {r.status_code}: {r.text[:400]}")
         return r.json()
 
+    async def _delete(self, path: str) -> Any:
+        assert self._http
+        r = await self._http.delete(path)
+        if not r.is_success:
+            raise YouGileError(f"DELETE {path} → {r.status_code}: {r.text[:400]}")
+        try:
+            return r.json()
+        except Exception:
+            return {}
+
     @staticmethod
     def _list(data: Any) -> list[dict]:
         if isinstance(data, list):
@@ -83,7 +93,6 @@ class YouGileClient:
         return self._list(await self._get("/columns", boardId=board_id))
 
     async def get_tasks(self, board_id: str) -> list[dict]:
-        # Collect tasks from every column of the board
         cols = await self.get_columns(board_id)
         all_tasks: list[dict] = []
         for col in cols:
@@ -94,8 +103,27 @@ class YouGileClient:
                 logger.warning("Колонка %s: %s", col.get("title"), e)
         return all_tasks
 
+    async def get_users(self) -> list[dict]:
+        for path in ("/employees", "/users", "/company/employees"):
+            try:
+                users = self._list(await self._get(path))
+                if users:
+                    return users
+            except YouGileError:
+                continue
+        return []
+
     async def move_task(self, task_id: str, column_id: str) -> dict:
         return await self._put(f"/tasks/{task_id}", {"columnId": column_id})
+
+    async def update_task(self, task_id: str, **fields: Any) -> dict:
+        return await self._put(f"/tasks/{task_id}", dict(fields))
+
+    async def create_task(self, column_id: str, title: str) -> dict:
+        return await self._post("/tasks", {"title": title, "columnId": column_id})
+
+    async def delete_task(self, task_id: str) -> None:
+        await self._delete(f"/tasks/{task_id}")
 
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/chats/{task_id}/messages", {"text": text})
