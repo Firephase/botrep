@@ -63,6 +63,8 @@ def _event_label(ev: ParsedEvent) -> str:
     if ev.action == "delete":
         return f"🗑 {frames_str}"
     if ev.action == "add":
+        if ev.frames:
+            return f"➕ Создать Кадр {fmt_frames(ev.frames)}"
         return f"➕ {(ev.extra_text or 'новая задача')[:30]}"
     if ev.action == "comment_only":
         return f"💬 {frames_str}"
@@ -721,8 +723,16 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     event = all_events[0] if all_events else parse_message(text)
 
     if event.action == "add":
-        ctx.user_data["pending"] = {"type": _P_ADD}
-        await update.message.reply_text("Введите название новой задачи:")
+        if event.has_frames:
+            # Frames detected — build add-events per frame and show checklist
+            add_events = [
+                ParsedEvent(frames=[f], action="add", comment=f"Кадр {f:02d}")
+                for f in event.frames
+            ]
+            await _show_batch_checklist(update, ctx, add_events)
+        else:
+            ctx.user_data["pending"] = {"type": _P_ADD}
+            await update.message.reply_text("Введите название новой задачи:")
         return
 
     if event.action == "delete":
@@ -731,7 +741,7 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 "Укажите кадр для удаления. Пример: «Удалить кадр 5»"
             )
             return
-        await _ask_delete_confirm(update, event.frames)
+        await _show_batch_checklist(update, ctx, [event])
         return
 
     if event.action == "comment_only":
@@ -907,10 +917,18 @@ async def _execute_event(
         return
 
     if event.action == "add":
-        title = event.extra_text or event.comment
         try:
-            task = await engine.create_task_with_title(title)
-            await reply_fn(f"Задача создана: «{title}» (id: {task.get('id', '?')})")
+            if event.frames:
+                results_add: list[str] = []
+                for frame in event.frames:
+                    t = f"Кадр {frame:02d}"
+                    task = await engine.create_task_with_title(t)
+                    results_add.append(f"Создано: «{t}»")
+                await reply_fn("\n".join(results_add))
+            else:
+                title = event.extra_text or event.comment or "Новая задача"
+                task = await engine.create_task_with_title(title)
+                await reply_fn(f"Задача создана: «{title}» (id: {task.get('id', '?')})")
         except Exception as e:
             await reply_fn(f"Ошибка: {e}")
         return
@@ -1088,9 +1106,15 @@ async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 parts.append("\n".join(lines))
 
             elif ev.action == "add":
-                title = ev.extra_text or ev.comment
-                task = await engine.create_task_with_title(title)
-                parts.append(f"Создано: «{title}» (id: {task.get('id','?')})")
+                if ev.frames:
+                    for frame in ev.frames:
+                        t = f"Кадр {frame:02d}"
+                        task = await engine.create_task_with_title(t)
+                        parts.append(f"Создано: «{t}»")
+                else:
+                    title = ev.extra_text or ev.comment or "Новая задача"
+                    task = await engine.create_task_with_title(title)
+                    parts.append(f"Создано: «{title}»")
 
             elif ev.action == "comment_only":
                 for frame in ev.frames:

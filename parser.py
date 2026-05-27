@@ -186,7 +186,7 @@ def parse_all(text: str) -> list[ParsedEvent]:
                     frames=list(ev.frames),
                     target_status=ev.target_status,
                     action=ev.action,
-                    comment=text,
+                    comment=ev.comment,
                     extra_text=ev.extra_text,
                     confidence=ev.confidence,
                 )
