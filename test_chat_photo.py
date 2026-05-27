@@ -83,15 +83,26 @@ rr = requests.post(
 )
 print(f"  → {rr.status_code}: {rr.text[:300]}")
 
-# ── шаг 4: смотрим схему messages из OpenAPI ──────────────────────────────
-print("\n=== OpenAPI schema: POST /chats/{chatId}/messages ===")
+# ── шаг 4: смотрим полную схему CreateChatMessageDto ──────────────────────
+print("\n=== OpenAPI: CreateChatMessageDto (все поля) ===")
 spec_r = requests.get("https://ru.yougile.com/api-json", headers=H, timeout=15)
 if spec_r.ok:
     spec = spec_r.json()
-    chat_post = spec["paths"].get("/api-v2/chats/{chatId}/messages", {}).get("post", {})
-    rb = chat_post.get("requestBody", {})
-    print(json.dumps(rb, indent=2, ensure_ascii=False)[:2000])
+    dto = spec.get("components", {}).get("schemas", {}).get("CreateChatMessageDto", {})
+    print(json.dumps(dto, indent=2, ensure_ascii=False))
+
+    # Все схемы, содержащие "file" в названии
+    print("\n=== Все схемы со словом 'file' или 'chat' ===")
+    for name, schema in spec.get("components", {}).get("schemas", {}).items():
+        if any(w in name.lower() for w in ("file", "chat", "attach", "message")):
+            print(f"\n--- {name} ---")
+            print(json.dumps(schema, indent=2, ensure_ascii=False)[:500])
 else:
     print(f"  spec недоступен: {spec_r.status_code}")
+
+# ── шаг 5: смотрим как выглядит существующее сообщение в чате ────────────
+print(f"\n=== GET /chats/{task_id}/messages (последние 3) ===")
+rr = requests.get(f"{BASE}/chats/{task_id}/messages", headers=H, timeout=10)
+print(f"  {rr.status_code}: {rr.text[:1000]}")
 
 print("\nГотово.")
