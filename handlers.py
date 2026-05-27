@@ -401,6 +401,41 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     await msg.edit_text(f"Распознано: «{text}»\nОбрабатываю...")
 
+    # Если в тексте есть "квен" / "qwen" — передаём в LLM
+    if re.search(r"кв[эе]н|qwen", text, re.IGNORECASE):
+        clean = re.sub(r"кв[эе]н|qwen", "", text, flags=re.IGNORECASE).strip()
+        qwen: QwenClient | None = ctx.bot_data.get("qwen")
+        if not qwen:
+            await msg.edit_text(f"Распознано: «{text}»\n\nQWEN_API_KEY не задан.")
+            return
+        try:
+            event = await qwen.parse(clean or text)
+        except LLMError as e:
+            await msg.edit_text(f"Распознано: «{text}»\n\nОшибка Qwen: {e}")
+            return
+
+        if not event.frames and event.action in ("move", "delete", "comment_only", "describe"):
+            await msg.edit_text(f"Распознано: «{text}»\n\nQwen не нашёл кадры.")
+            return
+
+        summary = _event_summary(event)
+        token = _store(ctx, {
+            "frames": event.frames,
+            "target_status": event.target_status,
+            "comment": event.comment,
+            "action": event.action,
+            "extra_text": event.extra_text,
+        })
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Выполнить", callback_data=f"qw:{token}"),
+            InlineKeyboardButton("Отмена", callback_data=_CB_CANCEL),
+        ]])
+        await msg.edit_text(
+            f"Распознано: «{text}»\n\nQwen распознал:\n{summary}\n\nВыполнить?",
+            reply_markup=kb,
+        )
+        return
+
     event = parse_message(text)
 
     if not event.has_frames:
