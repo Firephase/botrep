@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application
 
-from datetime import time as dt_time
+from datetime import time as dt_time, timezone
 
 from config import Config
 from database import Database
