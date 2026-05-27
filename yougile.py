@@ -123,7 +123,9 @@ class YouGileClient:
         return await self._post("/tasks", {"title": title, "columnId": column_id})
 
     async def delete_task(self, task_id: str) -> None:
-        await self._delete(f"/tasks/{task_id}")
+        # YouGile API v2 has no DELETE /tasks/{id} route.
+        # Soft-delete via PUT with {"deleted": true}.
+        await self._put(f"/tasks/{task_id}", {"deleted": True})
 
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/chats/{task_id}/messages", {"text": text})
