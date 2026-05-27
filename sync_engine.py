@@ -201,6 +201,18 @@ class SyncEngine:
             raise ValueError(f"Кадр {frame} не найден")
         await self._yougile.update_task(row["task_id"], assigned=[user_id])
 
+    async def attach_photo_to_frame(
+        self, frame: int, data: bytes, filename: str, mime: str, actor: str = ""
+    ) -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.attach_file_to_task(row["task_id"], filename, data, mime)
+        await self._db.log_action(self._project_key, "photo", [frame],
+                                  details=filename, actor=actor)
+
     async def set_deadline(self, frame: int, ts_ms: int) -> None:
         row = await self._db.get_task(self._project_key, frame)
         if not row:

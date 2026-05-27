@@ -33,6 +33,7 @@ _P_ADD = "add"
 _P_COMMENT = "cmt"
 _P_DESCRIBE = "dsc"
 _P_DEADLINE = "ddl"
+_P_PHOTO = "photo"
 
 
 def _make_token() -> str:
@@ -81,6 +82,7 @@ def register(
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, _on_photo))
 
     app.add_handler(CallbackQueryHandler(_cb_move, pattern=r"^mv:"))
     app.add_handler(CallbackQueryHandler(_cb_delete, pattern=r"^dl:"))
@@ -453,6 +455,62 @@ async def _do_deadline(
         await update.message.reply_text(f"Ошибка: {e}")
 
 
+# ── photo handler ─────────────────────────────────────────────────────────
+
+async def _on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+
+    msg_obj = update.message
+    if msg_obj.photo:
+        tg_file_id = msg_obj.photo[-1].file_id  # largest size
+        filename = "photo.jpg"
+        mime = "image/jpeg"
+    elif msg_obj.document and (msg_obj.document.mime_type or "").startswith("image/"):
+        tg_file_id = msg_obj.document.file_id
+        filename = msg_obj.document.file_name or "image"
+        mime = msg_obj.document.mime_type or "image/jpeg"
+    else:
+        return
+
+    caption = msg_obj.caption or ""
+    event = parse_message(caption) if caption else None
+    frame = event.frames[0] if (event and event.has_frames) else None
+
+    if frame:
+        await _do_attach_photo(update, ctx, tg_file_id, frame, filename, mime)
+    else:
+        ctx.user_data["pending"] = {
+            "type": _P_PHOTO,
+            "file_id": tg_file_id,
+            "filename": filename,
+            "mime": mime,
+        }
+        await msg_obj.reply_text(
+            "К какому кадру прикрепить фото?\nВведите номер (например: 5):"
+        )
+
+
+async def _do_attach_photo(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+    file_id: str, frame: int, filename: str, mime: str,
+) -> None:
+    import io as _io
+    msg = await update.message.reply_text(f"Прикрепляю к кадру {frame}...")
+    try:
+        tg_file = await ctx.bot.get_file(file_id)
+        buf = _io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        data = buf.getvalue()
+
+        await _engine(ctx).attach_photo_to_frame(
+            frame, data, filename, mime, actor=_actor(update)
+        )
+        await msg.edit_text(f"Фото прикреплено к кадру {frame}.")
+    except Exception as e:
+        await msg.edit_text(f"Ошибка: {e}")
+
+
 # ── voice handler ──────────────────────────────────────────────────────────
 
 async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -572,6 +630,18 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 await _do_deadline(update, ctx, pending["frame"], ts, text.strip())
             else:
                 await update.message.reply_text("Не распознал дату. Формат: ДД.ММ.ГГГГ")
+            return
+
+        if ptype == _P_PHOTO:
+            raw = text.strip()
+            if not raw.isdigit():
+                await update.message.reply_text("Введите номер кадра цифрой, например: 5")
+                return
+            await _do_attach_photo(
+                update, ctx,
+                pending["file_id"], int(raw),
+                pending["filename"], pending["mime"],
+            )
             return
 
     event = parse_message(text)
