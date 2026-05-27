@@ -13,6 +13,7 @@ from config import Config
 from database import Database
 from handlers import register
 from llm import QwenClient
+from stt import GroqSTT
 from sync_engine import SyncEngine
 from yougile import YouGileClient
 
@@ -126,6 +127,7 @@ def main() -> None:
     yougile = YouGileClient(cfg.yougile_api_key)
     engine = SyncEngine(yougile, db, cfg.yougile_board_id, cfg.yougile_project_key)
     qwen = QwenClient(cfg.qwen_api_key, cfg.qwen_model) if cfg.qwen_api_key else None
+    stt = GroqSTT(cfg.groq_api_key, cfg.groq_model) if cfg.groq_api_key else None
 
     async def on_startup(_app: Application) -> None:
         await db.init()
@@ -135,6 +137,10 @@ def main() -> None:
             await qwen.start()
             _app.bot_data["qwen"] = qwen
             logger.info("Qwen API подключён (модель: %s)", cfg.qwen_model)
+        if stt:
+            await stt.start()
+            _app.bot_data["stt"] = stt
+            logger.info("Groq STT подключён (модель: %s)", cfg.groq_model)
         try:
             n = await engine.sync_board()
             logger.info("Начальная синхронизация: %d кадров", n)
@@ -145,6 +151,8 @@ def main() -> None:
         await yougile.stop()
         if qwen:
             await qwen.stop()
+        if stt:
+            await stt.stop()
 
     app = (
         Application.builder()

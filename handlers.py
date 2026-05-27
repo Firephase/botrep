@@ -16,6 +16,7 @@ from telegram.ext import (
 
 from llm import LLMError, QwenClient
 from parser import ParsedEvent, STATUS_ALIASES, fmt_frames, parse_message
+from stt import GroqSTT, STTError
 from sync_engine import SyncEngine
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def register(
     app.add_handler(CommandHandler("qwen", _cmd_qwen))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
 
     app.add_handler(CallbackQueryHandler(_cb_move, pattern=r"^mv:"))
     app.add_handler(CallbackQueryHandler(_cb_delete, pattern=r"^dl:"))
@@ -361,6 +363,59 @@ async def _do_deadline(
         await update.message.reply_text(f"Дедлайн кадра {frame}: {label}")
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
+
+
+# ── voice handler ──────────────────────────────────────────────────────────
+
+async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+
+    stt: GroqSTT | None = ctx.bot_data.get("stt")
+    if not stt:
+        return  # молча игнорируем если GROQ_API_KEY не задан
+
+    voice = update.message.voice or update.message.audio
+    if not voice:
+        return
+
+    msg = await update.message.reply_text("Распознаю голосовое...")
+    try:
+        tg_file = await ctx.bot.get_file(voice.file_id)
+        import io as _io
+        buf = _io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        audio_bytes = buf.getvalue()
+
+        text = await stt.transcribe(audio_bytes)
+    except STTError as e:
+        await msg.edit_text(f"Ошибка распознавания: {e}")
+        return
+    except Exception as e:
+        await msg.edit_text(f"Ошибка загрузки аудио: {e}")
+        return
+
+    if not text:
+        await msg.edit_text("Не удалось распознать речь.")
+        return
+
+    await msg.edit_text(f"Распознано: «{text}»\nОбрабатываю...")
+
+    event = parse_message(text)
+
+    if not event.has_frames:
+        await msg.edit_text(f"Распознано: «{text}»\n\nКадры не найдены — уточните.")
+        return
+
+    if not event.has_status:
+        await msg.edit_text(
+            f"Распознано: «{text}»\n\n"
+            f"Кадры: {fmt_frames(event.frames)} — статус не понят."
+        )
+        return
+
+    result = await _engine(ctx).process_event(event)
+    await msg.edit_text(f"Распознано: «{text}»\n\n{result.summary()}")
 
 
 # ── message handler ────────────────────────────────────────────────────────

@@ -14,6 +14,8 @@ class Config:
     large_range_limit: int
     qwen_api_key: str = ""
     qwen_model: str = "qwen-plus"
+    groq_api_key: str = ""
+    groq_model: str = "whisper-large-v3-turbo"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -30,6 +32,8 @@ class Config:
             large_range_limit=int(os.getenv("LARGE_RANGE_LIMIT", "50")),
             qwen_api_key=os.getenv("QWEN_API_KEY", ""),
             qwen_model=os.getenv("QWEN_MODEL", "qwen-plus"),
+            groq_api_key=os.getenv("GROQ_API_KEY", ""),
+            groq_model=os.getenv("GROQ_MODEL", "whisper-large-v3-turbo"),
         )
 
     def validate(self) -> None:
