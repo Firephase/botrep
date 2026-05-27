@@ -130,23 +130,19 @@ class YouGileClient:
 
     async def attach_file_to_task(
         self, task_id: str, filename: str, data: bytes, mime: str
-    ) -> dict:
-        assert self._http
-        # Try 1: dedicated attachments endpoint
-        r = await self._http.post(
-            f"/tasks/{task_id}/attachments",
-            files={"file": (filename, data, mime)},
-        )
-        if r.is_success:
-            return r.json()
-        # Try 2: chat message with file + required text field
-        r = await self._http.post(
-            f"/chats/{task_id}/messages",
-            files={"file": (filename, data, mime)},
-            data={"text": f"📎 {filename}"},
-        )
-        if r.is_success:
-            return r.json()
-        raise YouGileError(
-            f"Файловые вложения не поддерживаются API: {r.status_code} {r.text[:200]}"
-        )
+    ) -> str:
+        """Upload file to catbox.moe and post URL as chat comment. Returns public URL."""
+        # Upload to catbox.moe (free, no account needed, permanent)
+        async with httpx.AsyncClient(timeout=30) as tmp:
+            r = await tmp.post(
+                "https://catbox.moe/user/api.php",
+                files={"fileToUpload": (filename, data, mime)},
+                data={"reqtype": "fileupload"},
+            )
+        if not r.is_success or not r.text.strip().startswith("http"):
+            raise YouGileError(f"catbox.moe upload failed: {r.status_code} {r.text[:100]}")
+        url = r.text.strip()
+
+        # Post URL as comment in YouGile task chat
+        await self.add_comment(task_id, f"📎 {filename}\n{url}")
+        return url
