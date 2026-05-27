@@ -2,7 +2,7 @@ import logging
 import random
 import re
 import string
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -69,6 +69,8 @@ def register(
     app.add_handler(CommandHandler("help", _cmd_help))
     app.add_handler(CommandHandler("sync", _cmd_sync))
     app.add_handler(CommandHandler("status", _cmd_status))
+    app.add_handler(CommandHandler("myid", _cmd_myid))
+    app.add_handler(CommandHandler("report", _cmd_report))
     app.add_handler(CommandHandler("add", _cmd_add))
     app.add_handler(CommandHandler("delete", _cmd_delete))
     app.add_handler(CommandHandler("comment", _cmd_comment))
@@ -97,6 +99,70 @@ def _is_allowed(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
 
 def _engine(ctx: ContextTypes.DEFAULT_TYPE) -> SyncEngine:
     return ctx.bot_data["engine"]
+
+
+def _actor(update: Update) -> str:
+    user = update.effective_user
+    if not user:
+        return ""
+    return user.full_name or user.username or str(user.id)
+
+
+def _format_daily_report(actions: list[dict], date_str: str) -> str:
+    if not actions:
+        return f"Сводка за {date_str}: действий не было."
+
+    moves: dict[str, list[int]] = {}
+    created: list[str] = []
+    deleted: list[int] = []
+    comments: list[int] = []
+    descriptions: list[int] = []
+
+    for a in actions:
+        frames = [int(f) for f in a["frames"].split(",") if f.isdigit()] if a.get("frames") else []
+        action = a["action"]
+        if action == "move":
+            status = (a.get("details") or "").replace("→ ", "").strip()
+            moves.setdefault(status, []).extend(frames)
+        elif action == "add":
+            created.append(a.get("details") or "?")
+        elif action == "delete":
+            deleted.extend(frames)
+        elif action == "comment":
+            comments.extend(frames)
+        elif action == "describe":
+            descriptions.extend(frames)
+
+    lines = [f"Сводка за {date_str}"]
+    if moves:
+        lines.append("\nПеремещения:")
+        for status, frs in moves.items():
+            lines.append(f"  → {status}: {fmt_frames(sorted(set(frs)))}")
+    if created:
+        lines.append(f"\nСоздано ({len(created)}):")
+        for t in created:
+            lines.append(f"  • {t}")
+    if deleted:
+        lines.append(f"\nУдалено: {fmt_frames(sorted(set(deleted)))}")
+    if comments:
+        lines.append(f"\nКомментарии: {fmt_frames(sorted(set(comments)))}")
+    if descriptions:
+        lines.append(f"\nОписания обновлены: {fmt_frames(sorted(set(descriptions)))}")
+    return "\n".join(lines)
+
+
+async def daily_report_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id: int = ctx.bot_data.get("report_chat_id", 0)
+    if not chat_id:
+        return
+    engine: SyncEngine = ctx.bot_data["engine"]
+    actions = await engine.get_today_actions()
+    date_str = date.today().strftime("%d.%m.%Y")
+    text = _format_daily_report(actions, date_str)
+    try:
+        await ctx.bot.send_message(chat_id=chat_id, text=text)
+    except Exception as e:
+        logger.error("Не удалось отправить сводку: %s", e)
 
 
 def _parse_date(s: str) -> int | None:
@@ -210,6 +276,28 @@ async def _cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text)
 
 
+# ── /myid ─────────────────────────────────────────────────────────────────
+
+async def _cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    uid = update.effective_user.id
+    cid = update.effective_chat.id
+    await update.message.reply_text(
+        f"User ID: {uid}\nChat ID: {cid}\n\n"
+        f"Для ежедневных сводок добавь в .env на VPS:\n"
+        f"REPORT_CHAT_ID={uid}"
+    )
+
+
+# ── /report ────────────────────────────────────────────────────────────────
+
+async def _cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    actions = await _engine(ctx).get_today_actions()
+    date_str = date.today().strftime("%d.%m.%Y")
+    await update.message.reply_text(_format_daily_report(actions, date_str))
+
+
 # ── /add ───────────────────────────────────────────────────────────────────
 
 async def _cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -226,7 +314,7 @@ async def _cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def _do_add_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, title: str) -> None:
     msg = await update.message.reply_text(f"Создаю задачу «{title}»...")
     try:
-        task = await _engine(ctx).create_task_with_title(title)
+        task = await _engine(ctx).create_task_with_title(title, actor=_actor(update))
         tid = task.get("id", "?")
         await msg.edit_text(f"Задача создана в Бэклоге:\n«{title}»\nid: {tid}")
     except Exception as e:
@@ -287,7 +375,7 @@ async def _do_comment(
     lines: list[str] = []
     for frame in frames:
         try:
-            await engine.comment_frame(frame, text)
+            await engine.comment_frame(frame, text, actor=_actor(update))
             lines.append(f"Кадр {frame}: комментарий добавлен")
         except Exception as e:
             lines.append(f"Кадр {frame}: ошибка — {e}")
@@ -316,7 +404,7 @@ async def _do_describe(
     update: Update, ctx: ContextTypes.DEFAULT_TYPE, frame: int, text: str
 ) -> None:
     try:
-        await _engine(ctx).update_description(frame, text)
+        await _engine(ctx).update_description(frame, text, actor=_actor(update))
         await update.message.reply_text(f"Описание кадра {frame} обновлено.")
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
@@ -567,7 +655,7 @@ async def _apply_move(
     msg = await update.message.reply_text(
         f"Обновляю {len(event.frames)} кадров → {event.target_status}..."
     )
-    result = await engine.process_event(event)
+    result = await engine.process_event(event, actor=_actor(update))
     await msg.edit_text(result.summary())
 
     if result.updated:

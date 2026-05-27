@@ -85,7 +85,10 @@ class SyncEngine:
 
     # ── event processing ───────────────────────────────────────────────────
 
-    async def process_event(self, event: ParsedEvent) -> SyncResult:
+    async def get_today_actions(self) -> list[dict]:
+        return await self._db.get_today_actions(self._project_key)
+
+    async def process_event(self, event: ParsedEvent, actor: str = "") -> SyncResult:
         result = SyncResult()
         if not (event.has_frames and event.has_status):
             return result
@@ -115,6 +118,10 @@ class SyncEngine:
             try:
                 await self._yougile.move_task(row["task_id"], col_id)
                 await self._db.update_task_status(row["task_id"], col_id, event.target_status)
+                await self._db.log_action(
+                    self._project_key, "move", [frame],
+                    details=f"→ {event.target_status}", actor=actor,
+                )
                 result.updated.append(frame)
             except YouGileError as e:
                 logger.error("Кадр %d (task %s): %s", frame, row["task_id"], e)
@@ -141,7 +148,7 @@ class SyncEngine:
 
     # ── new operations ─────────────────────────────────────────────────────
 
-    async def delete_frame(self, frame: int) -> str:
+    async def delete_frame(self, frame: int, actor: str = "") -> str:
         row = await self._db.get_task(self._project_key, frame)
         if not row:
             row = await self._search_and_cache(frame)
@@ -149,9 +156,10 @@ class SyncEngine:
             raise ValueError(f"Кадр {frame} не найден ни в кэше, ни в YouGile")
         await self._yougile.delete_task(row["task_id"])
         await self._db.delete_task(self._project_key, frame)
+        await self._db.log_action(self._project_key, "delete", [frame], actor=actor)
         return f"Кадр {frame:02d}"
 
-    async def create_task_with_title(self, title: str) -> dict:
+    async def create_task_with_title(self, title: str, actor: str = "") -> dict:
         col_id = self._columns.get("Бэклог", "")
         if not col_id:
             await self.sync_board()
@@ -162,23 +170,27 @@ class SyncEngine:
         frame = _frame_from_title(title)
         if frame:
             await self._db.upsert_task(self._project_key, frame, task["id"], col_id, "Бэклог")
+        await self._db.log_action(self._project_key, "add", [frame] if frame else None,
+                                  details=title, actor=actor)
         return task
 
-    async def update_description(self, frame: int, description: str) -> None:
+    async def update_description(self, frame: int, description: str, actor: str = "") -> None:
         row = await self._db.get_task(self._project_key, frame)
         if not row:
             row = await self._search_and_cache(frame)
         if not row:
             raise ValueError(f"Кадр {frame} не найден")
         await self._yougile.update_task(row["task_id"], description=description)
+        await self._db.log_action(self._project_key, "describe", [frame], actor=actor)
 
-    async def comment_frame(self, frame: int, text: str) -> None:
+    async def comment_frame(self, frame: int, text: str, actor: str = "") -> None:
         row = await self._db.get_task(self._project_key, frame)
         if not row:
             row = await self._search_and_cache(frame)
         if not row:
             raise ValueError(f"Кадр {frame} не найден")
         await self._yougile.add_comment(row["task_id"], text)
+        await self._db.log_action(self._project_key, "comment", [frame], actor=actor)
 
     async def get_users(self) -> list[dict]:
         return await self._yougile.get_users()

@@ -9,9 +9,11 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application
 
+from datetime import time as dt_time
+
 from config import Config
 from database import Database
-from handlers import register
+from handlers import daily_report_job, register
 from llm import QwenClient
 from stt import GroqSTT
 from sync_engine import SyncEngine
@@ -162,6 +164,16 @@ def main() -> None:
         .build()
     )
     register(app, engine, cfg.allowed_chat_ids, cfg.large_range_limit)
+
+    if cfg.report_chat_id:
+        app.bot_data["report_chat_id"] = cfg.report_chat_id
+        h, m = map(int, cfg.report_time.split(":"))
+        app.job_queue.run_daily(
+            daily_report_job,
+            time=dt_time(hour=h, minute=m, tzinfo=timezone.utc),
+            name="daily_report",
+        )
+        logger.info("Ежедневная сводка: %s UTC → chat %d", cfg.report_time, cfg.report_chat_id)
 
     logger.info("Бот запущен. Ctrl+C для остановки.")
     app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)

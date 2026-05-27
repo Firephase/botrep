@@ -28,6 +28,17 @@ class Database:
                     synced_at  TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS action_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_key TEXT NOT NULL,
+                    action      TEXT NOT NULL,
+                    frames      TEXT,
+                    details     TEXT,
+                    actor       TEXT,
+                    created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             await db.commit()
 
     async def get_task(self, project_key: str, frame: int) -> dict | None:
@@ -82,6 +93,37 @@ class Database:
                 (project_key, frame),
             )
             await db.commit()
+
+    async def log_action(
+        self,
+        project_key: str,
+        action: str,
+        frames: list[int] | None = None,
+        details: str = "",
+        actor: str = "",
+    ) -> None:
+        frames_str = ",".join(str(f) for f in frames) if frames else ""
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "INSERT INTO action_log (project_key, action, frames, details, actor)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (project_key, action, frames_str, details, actor),
+            )
+            await db.commit()
+
+    async def get_today_actions(self, project_key: str) -> list[dict]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT * FROM action_log
+                WHERE project_key = ? AND date(created_at) = date('now')
+                ORDER BY created_at
+                """,
+                (project_key,),
+            ) as cur:
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
 
     async def log_sync(self, board_id: str, task_count: int) -> None:
         async with aiosqlite.connect(self.path) as db:
