@@ -15,7 +15,7 @@ from telegram.ext import (
 )
 
 from llm import LLMError, QwenClient
-from parser import ParsedEvent, STATUS_ALIASES, fmt_frames, parse_message
+from parser import ParsedEvent, STATUS_ALIASES, fmt_frames, parse_message, parse_all
 from stt import GroqSTT, STTError
 from sync_engine import SyncEngine
 
@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 _CB_MOVE = "mv:"        # mv:{token}
 _CB_DEL = "dl:"         # dl:{frames_csv}
 _CB_ASSIGN = "as:"      # as:{token}:{user_id}
+_CB_BATCH_TOGGLE = "bt:"  # bt:{token}:{index}
+_CB_BATCH_EXEC = "bx:"    # bx:{token}
 _CB_SKIP = "sk"
 _CB_CANCEL = "cx"
 
@@ -52,6 +54,64 @@ def _load(ctx: ContextTypes.DEFAULT_TYPE, token: str) -> dict | None:
 
 def _drop(ctx: ContextTypes.DEFAULT_TYPE, token: str) -> None:
     ctx.bot_data.get("_cb", {}).pop(token, None)
+
+
+def _event_label(ev: ParsedEvent) -> str:
+    frames_str = f"К{fmt_frames(ev.frames)}" if ev.frames else ""
+    if ev.action == "move":
+        return f"{frames_str} → {ev.target_status}"
+    if ev.action == "delete":
+        return f"🗑 {frames_str}"
+    if ev.action == "add":
+        return f"➕ {(ev.extra_text or 'новая задача')[:30]}"
+    if ev.action == "comment_only":
+        return f"💬 {frames_str}"
+    if ev.action == "describe":
+        return f"📝 {frames_str}"
+    return frames_str
+
+
+def _batch_keyboard(
+    token: str, events: list[ParsedEvent], selected: list[bool]
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for i, (ev, sel) in enumerate(zip(events, selected)):
+        mark = "✅" if sel else "⬜"
+        label = f"{mark} {_event_label(ev)}"
+        rows.append([InlineKeyboardButton(label, callback_data=f"bt:{token}:{i}")])
+    n_sel = sum(selected)
+    exec_label = f"▶ Выполнить ({n_sel})" if n_sel else "▶ Выполнить"
+    rows.append([
+        InlineKeyboardButton(exec_label, callback_data=f"bx:{token}"),
+        InlineKeyboardButton("✕ Отмена", callback_data=_CB_CANCEL),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_batch_checklist(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    events: list[ParsedEvent],
+) -> None:
+    selected = [True] * len(events)
+    token = _store(ctx, {
+        "events": [
+            {
+                "frames": ev.frames,
+                "target_status": ev.target_status,
+                "action": ev.action,
+                "comment": ev.comment,
+                "extra_text": ev.extra_text,
+            }
+            for ev in events
+        ],
+        "selected": selected,
+    })
+    n = len(events)
+    header = f"Найдено {n} {'команда' if n == 1 else 'команды' if n < 5 else 'команд'}. Выбери нужные:"
+    await update.message.reply_text(
+        header, reply_markup=_batch_keyboard(token, events, selected)
+    )
 
 
 def register(
@@ -87,6 +147,8 @@ def register(
     app.add_handler(CallbackQueryHandler(_cb_move, pattern=r"^mv:"))
     app.add_handler(CallbackQueryHandler(_cb_delete, pattern=r"^dl:"))
     app.add_handler(CallbackQueryHandler(_cb_assign, pattern=r"^as:"))
+    app.add_handler(CallbackQueryHandler(_cb_batch_toggle, pattern=r"^bt:"))
+    app.add_handler(CallbackQueryHandler(_cb_batch_exec, pattern=r"^bx:"))
     app.add_handler(CallbackQueryHandler(_cb_qwen_confirm, pattern=r"^qw:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
@@ -582,7 +644,14 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    event = parse_message(text)
+    all_events = parse_all(text)
+
+    if len(all_events) >= 2:
+        await msg.edit_text(f"Распознано: «{text}»")
+        await _show_batch_checklist(update, ctx, all_events)
+        return
+
+    event = all_events[0] if all_events else parse_message(text)
 
     if not event.has_frames:
         await msg.edit_text(f"Распознано: «{text}»\n\nКадры не найдены — уточните.")
@@ -644,7 +713,12 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-    event = parse_message(text)
+    all_events = parse_all(text)
+    if len(all_events) >= 2:
+        await _show_batch_checklist(update, ctx, all_events)
+        return
+
+    event = all_events[0] if all_events else parse_message(text)
 
     if event.action == "add":
         ctx.user_data["pending"] = {"type": _P_ADD}
@@ -936,6 +1010,103 @@ async def _cb_qwen_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> No
         ctx,
         event,
     )
+
+
+async def _cb_batch_toggle(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    payload = query.data[len(_CB_BATCH_TOGGLE):]
+    token, _, idx_str = payload.rpartition(":")
+    idx = int(idx_str)
+
+    data = _load(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла, повторите команду.")
+        return
+
+    data["selected"][idx] = not data["selected"][idx]
+
+    events = [
+        ParsedEvent(
+            frames=e["frames"],
+            target_status=e["target_status"],
+            action=e["action"],
+            comment=e["comment"],
+            extra_text=e["extra_text"],
+        )
+        for e in data["events"]
+    ]
+    await query.edit_message_reply_markup(
+        reply_markup=_batch_keyboard(token, events, data["selected"])
+    )
+
+
+async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    token = query.data[len(_CB_BATCH_EXEC):]
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла, повторите команду.")
+        return
+
+    to_run = [
+        ParsedEvent(
+            frames=e["frames"],
+            target_status=e["target_status"],
+            action=e["action"],
+            comment=e["comment"],
+            extra_text=e["extra_text"],
+        )
+        for e, sel in zip(data["events"], data["selected"])
+        if sel
+    ]
+
+    if not to_run:
+        await query.edit_message_text("Ничего не выбрано.")
+        return
+
+    await query.edit_message_text(f"Выполняю {len(to_run)} команд...")
+
+    engine = _engine(ctx)
+    parts: list[str] = []
+
+    for ev in to_run:
+        try:
+            if ev.action == "move":
+                res = await engine.process_event(ev)
+                parts.append(res.summary())
+
+            elif ev.action == "delete":
+                lines: list[str] = []
+                for frame in ev.frames:
+                    title = await engine.delete_frame(frame)
+                    lines.append(f"{title} удалён")
+                parts.append("\n".join(lines))
+
+            elif ev.action == "add":
+                title = ev.extra_text or ev.comment
+                task = await engine.create_task_with_title(title)
+                parts.append(f"Создано: «{title}» (id: {task.get('id','?')})")
+
+            elif ev.action == "comment_only":
+                for frame in ev.frames:
+                    await engine.comment_frame(frame, ev.extra_text or ev.comment)
+                parts.append(f"Комментарий добавлен: {fmt_frames(ev.frames)}")
+
+            elif ev.action == "describe":
+                if ev.frames:
+                    await engine.update_description(ev.frames[0], ev.extra_text or ev.comment)
+                    parts.append(f"Описание кадра {ev.frames[0]} обновлено")
+
+        except Exception as e:
+            label = _event_label(ev)
+            parts.append(f"Ошибка [{label}]: {e}")
+
+    await query.edit_message_text("\n\n".join(parts) or "Готово")
 
 
 async def _cb_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

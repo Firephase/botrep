@@ -141,6 +141,120 @@ def parse_message(text: str) -> ParsedEvent:
     )
 
 
+def parse_all(text: str) -> list[ParsedEvent]:
+    """Return all distinct commands found in text (≥1 item)."""
+    low = text.lower()
+
+    matched_statuses = [
+        col for col, aliases in STATUS_ALIASES.items()
+        if any(alias in low for alias in aliases)
+    ]
+    has_delete = any(w in low for w in _DELETE_WORDS)
+    has_add = any(w in low for w in _ADD_WORDS)
+    total_markers = len(matched_statuses) + has_delete + has_add
+
+    if total_markers <= 1:
+        return [parse_message(text)]
+
+    # Try splitting by natural clause separators
+    clauses = [c.strip() for c in re.split(r'[,;\n]|\s+и\s+', text) if c.strip()]
+
+    if len(clauses) > 1:
+        parsed = [parse_message(c) for c in clauses]
+
+        # Inherit status from neighbour for frameless clauses
+        for i, ev in enumerate(parsed):
+            if ev.has_frames and not ev.has_status and ev.action == "move":
+                for j in [i + 1, i - 1]:
+                    if 0 <= j < len(parsed) and parsed[j].has_status:
+                        ev.target_status = parsed[j].target_status
+                        ev.confidence = max(ev.confidence - 0.1, 0.5)
+                        break
+
+        # Merge clauses with identical (action, status)
+        merged: dict[tuple, ParsedEvent] = {}
+        for ev in parsed:
+            if not ev.has_frames and ev.action != "add":
+                continue
+            if ev.action == "move" and not ev.has_status:
+                continue
+            key = (ev.action, ev.target_status)
+            if key in merged:
+                merged[key].frames = sorted(set(merged[key].frames + ev.frames))
+            else:
+                merged[key] = ParsedEvent(
+                    frames=list(ev.frames),
+                    target_status=ev.target_status,
+                    action=ev.action,
+                    comment=text,
+                    extra_text=ev.extra_text,
+                    confidence=ev.confidence,
+                )
+
+        events = list(merged.values())
+        if events:
+            return events
+
+    # No separators — assign frames to nearest status/action by position
+    return _parse_by_markers(text, low)
+
+
+def _parse_by_markers(text: str, low: str) -> list[ParsedEvent]:
+    markers: list[tuple[int, str, str | None]] = []  # (pos, action, status)
+
+    for col, aliases in STATUS_ALIASES.items():
+        for alias in sorted(aliases, key=len, reverse=True):
+            for m in re.finditer(re.escape(alias), low):
+                pos = m.start()
+                if not any(abs(pos - mp) < 4 for mp, _, _ in markers):
+                    markers.append((pos, "move", col))
+
+    for word in _DELETE_WORDS:
+        for m in re.finditer(re.escape(word), low):
+            markers.append((m.start(), "delete", None))
+    for word in _ADD_WORDS:
+        for m in re.finditer(re.escape(word), low):
+            markers.append((m.start(), "add", None))
+
+    markers.sort()
+    if len(markers) <= 1:
+        return [parse_message(text)]
+
+    frame_occs: list[tuple[int, list[int]]] = []
+    for pat in _PATTERNS:
+        for m in re.finditer(pat, low):
+            groups = [g for g in m.groups() if g is not None]
+            frames: list[int] = []
+            if len(groups) == 2 and groups[0].isdigit() and groups[1].isdigit():
+                a, b = int(groups[0]), int(groups[1])
+                if a <= b <= a + 500:
+                    frames.extend(range(a, b + 1))
+            elif groups:
+                frames.extend(_expand_num_list(groups[0]))
+            if frames:
+                frame_occs.append((m.start(), frames))
+
+    bucket: dict[int, list[int]] = {i: [] for i in range(len(markers))}
+    for fpos, frames in frame_occs:
+        nearest = min(range(len(markers)), key=lambda i: abs(markers[i][0] - fpos))
+        bucket[nearest].extend(frames)
+
+    events: list[ParsedEvent] = []
+    for i, (_, action, status) in enumerate(markers):
+        frames = sorted(set(bucket[i]))
+        if not frames and action not in ("add",):
+            continue
+        events.append(ParsedEvent(
+            frames=frames,
+            target_status=status,
+            action=action,
+            comment=text,
+            confidence=0.85,
+        ))
+
+    return events if events else [parse_message(text)]
+
+
 def fmt_frames(frames: list[int]) -> str:
     """[1,2,3,5,6] → '1–3, 5–6'"""
     if not frames:
