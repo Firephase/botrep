@@ -203,15 +203,28 @@ class SyncEngine:
 
     async def attach_photo_to_frame(
         self, frame: int, data: bytes, filename: str, mime: str, actor: str = ""
-    ) -> None:
+    ) -> str:
+        """Returns how the image was attached: 'file' or 'comment'."""
         row = await self._db.get_task(self._project_key, frame)
         if not row:
             row = await self._search_and_cache(frame)
         if not row:
             raise ValueError(f"Кадр {frame} не найден")
-        await self._yougile.attach_file_to_task(row["task_id"], filename, data, mime)
+        try:
+            await self._yougile.attach_file_to_task(row["task_id"], filename, data, mime)
+            method = "file"
+        except YouGileError:
+            # Fallback: post a comment noting the attachment was received
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime("%d.%m.%Y %H:%M")
+            await self._yougile.add_comment(
+                row["task_id"],
+                f"📎 Изображение от {actor or 'пользователя'} ({ts}): {filename}",
+            )
+            method = "comment"
         await self._db.log_action(self._project_key, "photo", [frame],
                                   details=filename, actor=actor)
+        return method
 
     async def set_deadline(self, frame: int, ts_ms: int) -> None:
         row = await self._db.get_task(self._project_key, frame)

@@ -503,10 +503,16 @@ async def _do_attach_photo(
         await tg_file.download_to_memory(buf)
         data = buf.getvalue()
 
-        await _engine(ctx).attach_photo_to_frame(
+        method = await _engine(ctx).attach_photo_to_frame(
             frame, data, filename, mime, actor=_actor(update)
         )
-        await msg.edit_text(f"Фото прикреплено к кадру {frame}.")
+        if method == "file":
+            await msg.edit_text(f"Фото прикреплено к кадру {frame}.")
+        else:
+            await msg.edit_text(
+                f"Кадр {frame}: файловые вложения не поддерживаются YouGile API.\n"
+                f"Добавлен комментарий с именем файла в задачу."
+            )
     except Exception as e:
         await msg.edit_text(f"Ошибка: {e}")
 

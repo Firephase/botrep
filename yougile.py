@@ -128,17 +128,25 @@ class YouGileClient:
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/chats/{task_id}/messages", {"text": text})
 
-    async def attach_file_to_task(self, task_id: str, filename: str, data: bytes, mime: str) -> dict:
+    async def attach_file_to_task(
+        self, task_id: str, filename: str, data: bytes, mime: str
+    ) -> dict:
         assert self._http
-        # Try 1: multipart POST to task attachments
-        for path in (f"/tasks/{task_id}/attachments", f"/chats/{task_id}/messages"):
-            r = await self._http.post(
-                path,
-                files={"file": (filename, data, mime)},
-            )
-            if r.is_success:
-                return r.json()
+        # Try 1: dedicated attachments endpoint
+        r = await self._http.post(
+            f"/tasks/{task_id}/attachments",
+            files={"file": (filename, data, mime)},
+        )
+        if r.is_success:
+            return r.json()
+        # Try 2: chat message with file + required text field
+        r = await self._http.post(
+            f"/chats/{task_id}/messages",
+            files={"file": (filename, data, mime)},
+            data={"text": f"📎 {filename}"},
+        )
+        if r.is_success:
+            return r.json()
         raise YouGileError(
-            f"Не удалось прикрепить файл (пробовали /attachments и /chats): "
-            f"{r.status_code} {r.text[:200]}"
+            f"Файловые вложения не поддерживаются API: {r.status_code} {r.text[:200]}"
         )
