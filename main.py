@@ -134,7 +134,10 @@ def main() -> None:
     async def on_startup(_app: Application) -> None:
         await db.init()
         await yougile.start()
-        logger.info("YouGile: %s", await yougile.test_connection())
+        try:
+            logger.info("YouGile: %s", await yougile.test_connection())
+        except Exception as e:
+            logger.warning("YouGile недоступен при старте: %s", e)
         if qwen:
             await qwen.start()
             _app.bot_data["qwen"] = qwen
