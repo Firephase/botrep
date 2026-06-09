@@ -94,6 +94,7 @@ async def _show_batch_checklist(
     update: Update,
     ctx: ContextTypes.DEFAULT_TYPE,
     events: list[ParsedEvent],
+    header: str | None = None,
 ) -> None:
     selected = [True] * len(events)
     token = _store(ctx, {
@@ -109,8 +110,9 @@ async def _show_batch_checklist(
         ],
         "selected": selected,
     })
-    n = len(events)
-    header = f"Найдено {n} {'команда' if n == 1 else 'команды' if n < 5 else 'команд'}. Выбери нужные:"
+    if header is None:
+        n = len(events)
+        header = f"Найдено {n} {'команда' if n == 1 else 'команды' if n < 5 else 'команд'}. Выбери нужные:"
     await update.message.reply_text(
         header, reply_markup=_batch_keyboard(token, events, selected)
     )
@@ -627,30 +629,24 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.edit_text(f"Распознано: «{text}»\n\nQWEN_API_KEY не задан.")
             return
         try:
-            event = await qwen.parse(clean or text)
+            events = await qwen.parse_all(clean or text)
         except LLMError as e:
             await msg.edit_text(f"Распознано: «{text}»\n\nОшибка Qwen: {e}")
             return
 
-        if not event.frames and event.action in ("move", "delete", "comment_only", "describe"):
-            await msg.edit_text(f"Распознано: «{text}»\n\nQwen не нашёл кадры.")
+        valid = [ev for ev in events if ev.frames or ev.action == "add"]
+        if not valid:
+            await msg.edit_text(f"Распознано: «{text}»\n\nQwen не нашёл команд.")
             return
 
-        summary = _event_summary(event)
-        token = _store(ctx, {
-            "frames": event.frames,
-            "target_status": event.target_status,
-            "comment": event.comment,
-            "action": event.action,
-            "extra_text": event.extra_text,
-        })
-        kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("Выполнить", callback_data=f"qw:{token}"),
-            InlineKeyboardButton("Отмена", callback_data=_CB_CANCEL),
-        ]])
+        n = len(valid)
         await msg.edit_text(
-            f"Распознано: «{text}»\n\nQwen распознал:\n{summary}\n\nВыполнить?",
-            reply_markup=kb,
+            f"Распознано: «{text}»\n\n"
+            f"Qwen распознал {n} {'команду' if n == 1 else 'команды' if n < 5 else 'команд'}:"
+        )
+        await _show_batch_checklist(
+            update, ctx, valid,
+            header="Выбери нужные и нажми Выполнить:",
         )
         return
 
@@ -992,31 +988,30 @@ async def _cmd_qwen(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     msg = await update.message.reply_text("Анализирую через Qwen...")
     try:
-        event = await qwen.parse(text)
+        events = await qwen.parse_all(text)
     except LLMError as e:
         await msg.edit_text(f"Ошибка Qwen:\n{e}")
         return
 
-    if not event.frames and event.action in ("move", "delete", "comment_only", "describe"):
+    valid = [
+        ev for ev in events
+        if ev.frames or ev.action == "add"
+    ]
+    if not valid:
         await msg.edit_text(
-            f"Qwen не нашёл номера кадров в тексте.\n"
-            f"Распознал: действие={event.action}, статус={event.target_status}"
+            "Qwen не нашёл команд в тексте.\n"
+            f"Сырой ответ: {events}"
         )
         return
 
-    summary = _event_summary(event)
-    token = _store(ctx, {
-        "frames": event.frames,
-        "target_status": event.target_status,
-        "comment": event.comment,
-        "action": event.action,
-        "extra_text": event.extra_text,
-    })
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("Выполнить", callback_data=f"qw:{token}"),
-        InlineKeyboardButton("Отмена", callback_data=_CB_CANCEL),
-    ]])
-    await msg.edit_text(f"Qwen распознал:\n{summary}\n\nВыполнить?", reply_markup=kb)
+    n = len(valid)
+    await msg.edit_text(
+        f"Qwen распознал {n} {'команду' if n == 1 else 'команды' if n < 5 else 'команд'}:"
+    )
+    await _show_batch_checklist(
+        update, ctx, valid,
+        header="Выбери нужные и нажми Выполнить:",
+    )
 
 
 async def _cb_qwen_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
