@@ -140,6 +140,7 @@ def register(
     app.add_handler(CommandHandler("desc", _cmd_desc))
     app.add_handler(CommandHandler("assign", _cmd_assign))
     app.add_handler(CommandHandler("deadline", _cmd_deadline))
+    app.add_handler(CommandHandler("cancel", _cmd_cancel_pending))
     app.add_handler(CommandHandler("qwen", _cmd_qwen))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
@@ -343,6 +344,13 @@ async def _cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ── /myid ─────────────────────────────────────────────────────────────────
+
+async def _cmd_cancel_pending(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if ctx.user_data.pop("pending", None):
+        await update.message.reply_text("Отменено.")
+    else:
+        await update.message.reply_text("Нет активного ожидания.")
+
 
 async def _cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
@@ -678,6 +686,14 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = update.message.text
     pending = ctx.user_data.get("pending")
+
+    if pending:
+        # If the message looks like a real command (high-confidence event),
+        # ignore the stale pending state so commands aren't swallowed as text.
+        _peek = parse_message(text)
+        if _peek.confidence >= 0.9:
+            ctx.user_data.pop("pending", None)
+            pending = None
 
     if pending:
         ptype = pending.get("type")
