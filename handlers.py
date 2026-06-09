@@ -678,6 +678,13 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.edit_text(f"Распознано: «{text}»\n\n{result.summary()}")
 
 
+_CANCEL_PHRASES = {
+    "нет", "не надо", "стоп", "стой", "отмена", "отменить",
+    "cancel", "хватит", "не нужно", "не нужен", "не нужна",
+    "нет нет", "стоп стоп",
+}
+
+
 # ── message handler ────────────────────────────────────────────────────────
 
 async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -685,6 +692,14 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     text = update.message.text
+    low = text.strip().lower()
+
+    # Natural-language cancel: clears any pending state
+    if low in _CANCEL_PHRASES:
+        ctx.user_data.pop("pending", None)
+        await update.message.reply_text("Отменено.")
+        return
+
     pending = ctx.user_data.get("pending")
 
     if pending:
