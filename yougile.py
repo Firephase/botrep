@@ -130,6 +130,13 @@ class YouGileClient:
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/chats/{task_id}/messages", {"text": text})
 
+    async def get_chat_messages(self, task_id: str) -> list[dict]:
+        data = await self._get(f"/chats/{task_id}/messages")
+        return self._list(data)
+
+    async def delete_chat_message(self, task_id: str, message_id: int) -> None:
+        await self._put(f"/chats/{task_id}/messages/{message_id}", {"deleted": True})
+
     async def attach_file_to_task(
         self, task_id: str, filename: str, data: bytes, mime: str
     ) -> str:

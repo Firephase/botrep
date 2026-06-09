@@ -27,6 +27,7 @@ _CB_DEL = "dl:"         # dl:{frames_csv}
 _CB_ASSIGN = "as:"      # as:{token}:{user_id}
 _CB_BATCH_TOGGLE = "bt:"  # bt:{token}:{index}
 _CB_BATCH_EXEC = "bx:"    # bx:{token}
+_CB_DEL_MSG = "dm:"       # dm:{token}:{index}
 _CB_SKIP = "sk"
 _CB_CANCEL = "cx"
 
@@ -143,6 +144,8 @@ def register(
     app.add_handler(CommandHandler("assign", _cmd_assign))
     app.add_handler(CommandHandler("deadline", _cmd_deadline))
     app.add_handler(CommandHandler("cancel", _cmd_cancel_pending))
+    app.add_handler(CommandHandler("messages", _cmd_messages))
+    app.add_handler(CommandHandler("cleardesc", _cmd_cleardesc))
     app.add_handler(CommandHandler("qwen", _cmd_qwen))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
@@ -154,6 +157,7 @@ def register(
     app.add_handler(CallbackQueryHandler(_cb_assign, pattern=r"^as:"))
     app.add_handler(CallbackQueryHandler(_cb_batch_toggle, pattern=r"^bt:"))
     app.add_handler(CallbackQueryHandler(_cb_batch_exec, pattern=r"^bx:"))
+    app.add_handler(CallbackQueryHandler(_cb_delete_message, pattern=r"^dm:"))
     app.add_handler(CallbackQueryHandler(_cb_qwen_confirm, pattern=r"^qw:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
@@ -966,6 +970,107 @@ async def _execute_event(
             await reply_fn(f"Описание кадра {frame} обновлено.")
         except Exception as e:
             await reply_fn(f"Ошибка: {e}")
+
+
+# ── /qwen ──────────────────────────────────────────────────────────────────
+
+def _messages_keyboard(token: str, messages: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for i, msg in enumerate(messages):
+        raw = (msg.get("text") or "").replace("\n", " ").strip()
+        label = f"🗑 {raw[:45]}" if raw else "🗑 (вложение)"
+        rows.append([InlineKeyboardButton(label, callback_data=f"dm:{token}:{i}")])
+    rows.append([InlineKeyboardButton("✕ Закрыть", callback_data=_CB_CANCEL)])
+    return InlineKeyboardMarkup(rows)
+
+
+# ── /messages ──────────────────────────────────────────────────────────────
+
+async def _cmd_messages(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text("Использование: /messages <кадр>")
+        return
+    frame = int(ctx.args[0])
+    msg = await update.message.reply_text(f"Загружаю сообщения кадра {frame}...")
+    try:
+        task_id, messages = await _engine(ctx).get_task_messages(frame)
+    except Exception as e:
+        await msg.edit_text(f"Ошибка: {e}")
+        return
+
+    if not messages:
+        await msg.edit_text(f"Кадр {frame}: сообщений нет.")
+        return
+
+    # Keep last 15 messages
+    shown = messages[-15:]
+    token = _store(ctx, {"task_id": task_id, "messages": shown, "frame": frame})
+    kb = _messages_keyboard(token, shown)
+    await msg.edit_text(
+        f"Кадр {frame} — последние {len(shown)} сообщений. Нажми 🗑 чтобы удалить:",
+        reply_markup=kb,
+    )
+
+
+async def _cb_delete_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    payload = query.data[len(_CB_DEL_MSG):]
+    token, _, idx_str = payload.rpartition(":")
+    idx = int(idx_str)
+
+    data = _load(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла, повторите /messages.")
+        return
+
+    messages: list[dict] = data["messages"]
+    task_id: str = data["task_id"]
+    frame: int = data["frame"]
+
+    if idx >= len(messages):
+        await query.answer("Сообщение уже удалено.")
+        return
+
+    msg_id: int = messages[idx]["id"]
+    try:
+        await _engine(ctx).delete_task_message(task_id, msg_id)
+    except Exception as e:
+        await query.answer(f"Ошибка: {e}", show_alert=True)
+        return
+
+    messages.pop(idx)
+    data["messages"] = messages
+
+    if not messages:
+        _drop(ctx, token)
+        await query.edit_message_text(f"Кадр {frame}: все сообщения удалены.")
+        return
+
+    kb = _messages_keyboard(token, messages)
+    await query.edit_message_text(
+        f"Удалено. Кадр {frame} — осталось {len(messages)} сообщений:",
+        reply_markup=kb,
+    )
+
+
+# ── /cleardesc ─────────────────────────────────────────────────────────────
+
+async def _cmd_cleardesc(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    if not ctx.args or not ctx.args[0].isdigit():
+        await update.message.reply_text("Использование: /cleardesc <кадр>")
+        return
+    frame = int(ctx.args[0])
+    try:
+        await _engine(ctx).clear_description(frame, actor=_actor(update))
+        await update.message.reply_text(f"Описание кадра {frame} очищено.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
 
 
 # ── /qwen ──────────────────────────────────────────────────────────────────

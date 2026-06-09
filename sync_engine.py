@@ -192,6 +192,29 @@ class SyncEngine:
         await self._yougile.add_comment(row["task_id"], text)
         await self._db.log_action(self._project_key, "comment", [frame], actor=actor)
 
+    async def get_task_messages(self, frame: int) -> tuple[str, list[dict]]:
+        """Returns (task_id, messages_list)."""
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        messages = await self._yougile.get_chat_messages(row["task_id"])
+        return row["task_id"], messages
+
+    async def delete_task_message(self, task_id: str, message_id: int) -> None:
+        await self._yougile.delete_chat_message(task_id, message_id)
+
+    async def clear_description(self, frame: int, actor: str = "") -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.update_task(row["task_id"], description="")
+        await self._db.log_action(self._project_key, "describe", [frame],
+                                  details="description cleared", actor=actor)
+
     async def get_users(self) -> list[dict]:
         return await self._yougile.get_users()
 
