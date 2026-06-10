@@ -127,6 +127,15 @@ class YouGileClient:
         # Soft-delete via PUT with {"deleted": true}.
         await self._put(f"/tasks/{task_id}", {"deleted": True})
 
+    async def create_column(self, board_id: str, title: str) -> dict:
+        return await self._post("/columns", {"title": title, "boardId": board_id})
+
+    async def rename_column(self, column_id: str, new_title: str) -> dict:
+        return await self._put(f"/columns/{column_id}", {"title": new_title})
+
+    async def delete_column(self, column_id: str) -> None:
+        await self._put(f"/columns/{column_id}", {"deleted": True})
+
     async def add_comment(self, task_id: str, text: str) -> dict:
         return await self._post(f"/chats/{task_id}/messages", {"text": text})
 

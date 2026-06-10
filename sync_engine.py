@@ -64,11 +64,19 @@ class SyncEngine:
         tasks = await self._yougile.get_tasks(self._board_id)
         logger.info("Задач на доске: %d", len(tasks))
 
+        frame_seen: dict[int, str] = {}
         synced = 0
         for task in tasks:
             frame = _frame_from_title(task.get("name") or task.get("title", ""))
             if frame is None:
                 continue
+            if frame in frame_seen:
+                logger.warning(
+                    "Дублирующийся кадр %d: tasks %s и %s — пропускаем второй",
+                    frame, frame_seen[frame], task["id"],
+                )
+                continue
+            frame_seen[frame] = task["id"]
             col_id = task.get("columnId", "")
             col_name = next((n for n, i in self._columns.items() if i == col_id), "")
             await self._db.upsert_task(
@@ -160,6 +168,14 @@ class SyncEngine:
         return f"Кадр {frame:02d}"
 
     async def create_task_with_title(self, title: str, actor: str = "") -> dict:
+        frame = _frame_from_title(title)
+        if frame:
+            existing = await self._db.get_task(self._project_key, frame)
+            if not existing:
+                existing = await self._search_and_cache(frame)
+            if existing:
+                raise ValueError(f"Кадр {frame} уже существует на доске")
+
         col_id = self._columns.get("Бэклог", "")
         if not col_id:
             await self.sync_board()
@@ -167,12 +183,78 @@ class SyncEngine:
         if not col_id:
             raise ValueError("Колонка «Бэклог» не найдена на доске")
         task = await self._yougile.create_task(col_id, title)
-        frame = _frame_from_title(title)
         if frame:
             await self._db.upsert_task(self._project_key, frame, task["id"], col_id, "Бэклог")
         await self._db.log_action(self._project_key, "add", [frame] if frame else None,
                                   details=title, actor=actor)
         return task
+
+    async def create_task_in_column(self, title: str, column_name: str, actor: str = "") -> dict:
+        """Create a task in a specific column (used by /newtask step-by-step dialog)."""
+        frame = _frame_from_title(title)
+        if frame:
+            existing = await self._db.get_task(self._project_key, frame)
+            if not existing:
+                existing = await self._search_and_cache(frame)
+            if existing:
+                raise ValueError(f"Кадр {frame} уже существует на доске")
+
+        if not self._columns:
+            await self.sync_board()
+        col_id = self._columns.get(column_name)
+        if not col_id:
+            raise ValueError(f"Колонка «{column_name}» не найдена. Доступные: {', '.join(self._columns)}")
+        task = await self._yougile.create_task(col_id, title)
+        if frame:
+            await self._db.upsert_task(self._project_key, frame, task["id"], col_id, column_name)
+        await self._db.log_action(
+            self._project_key, "add", [frame] if frame else None,
+            details=f"{title} → {column_name}", actor=actor,
+        )
+        return task
+
+    async def rename_frame_task(self, frame: int, new_title: str, actor: str = "") -> None:
+        row = await self._db.get_task(self._project_key, frame)
+        if not row:
+            row = await self._search_and_cache(frame)
+        if not row:
+            raise ValueError(f"Кадр {frame} не найден")
+        await self._yougile.update_task(row["task_id"], title=new_title)
+        new_frame = _frame_from_title(new_title)
+        if new_frame and new_frame != frame:
+            await self._db.delete_task(self._project_key, frame)
+            await self._db.upsert_task(
+                self._project_key, new_frame, row["task_id"],
+                row.get("column_id"), row.get("status"),
+            )
+        await self._db.log_action(self._project_key, "rename", [frame], details=new_title, actor=actor)
+
+    async def create_column_op(self, name: str) -> dict:
+        if name in self._columns:
+            raise ValueError(f"Колонка «{name}» уже существует")
+        col = await self._yougile.create_column(self._board_id, name)
+        self._columns[name] = col["id"]
+        return col
+
+    async def rename_column_op(self, old_name: str, new_name: str) -> None:
+        col_id = self._columns.get(old_name)
+        if not col_id:
+            raise ValueError(
+                f"Колонка «{old_name}» не найдена. Доступные: {', '.join(self._columns)}"
+            )
+        if new_name in self._columns:
+            raise ValueError(f"Колонка «{new_name}» уже существует")
+        await self._yougile.rename_column(col_id, new_name)
+        self._columns[new_name] = self._columns.pop(old_name)
+
+    async def delete_column_op(self, name: str) -> None:
+        col_id = self._columns.get(name)
+        if not col_id:
+            raise ValueError(
+                f"Колонка «{name}» не найдена. Доступные: {', '.join(self._columns)}"
+            )
+        await self._yougile.delete_column(col_id)
+        del self._columns[name]
 
     async def update_description(self, frame: int, description: str, actor: str = "") -> None:
         row = await self._db.get_task(self._project_key, frame)

@@ -28,6 +28,8 @@ _CB_ASSIGN = "as:"      # as:{token}:{user_id}
 _CB_BATCH_TOGGLE = "bt:"  # bt:{token}:{index}
 _CB_BATCH_EXEC = "bx:"    # bx:{token}
 _CB_DEL_MSG = "dm:"       # dm:{token}:{index}
+_CB_NEWTASK_COL = "ntc:"  # ntc:{token}:{col_index}
+_CB_DELCOL = "dco:"       # dco:{token}
 _CB_SKIP = "sk"
 _CB_CANCEL = "cx"
 
@@ -37,6 +39,8 @@ _P_COMMENT = "cmt"
 _P_DESCRIBE = "dsc"
 _P_DEADLINE = "ddl"
 _P_PHOTO = "photo"
+_P_NEWTASK = "nt"
+_P_NEWCOL = "nc"
 
 
 def _make_token() -> str:
@@ -138,7 +142,9 @@ def register(
     app.add_handler(CommandHandler("myid", _cmd_myid))
     app.add_handler(CommandHandler("report", _cmd_report))
     app.add_handler(CommandHandler("add", _cmd_add))
+    app.add_handler(CommandHandler("newtask", _cmd_newtask))
     app.add_handler(CommandHandler("delete", _cmd_delete))
+    app.add_handler(CommandHandler("rename", _cmd_rename))
     app.add_handler(CommandHandler("comment", _cmd_comment))
     app.add_handler(CommandHandler("desc", _cmd_desc))
     app.add_handler(CommandHandler("assign", _cmd_assign))
@@ -147,6 +153,9 @@ def register(
     app.add_handler(CommandHandler("messages", _cmd_messages))
     app.add_handler(CommandHandler("cleardesc", _cmd_cleardesc))
     app.add_handler(CommandHandler("qwen", _cmd_qwen))
+    app.add_handler(CommandHandler("newcol", _cmd_newcol))
+    app.add_handler(CommandHandler("renamecol", _cmd_renamecol))
+    app.add_handler(CommandHandler("deletecol", _cmd_deletecol))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, _on_voice))
@@ -159,6 +168,8 @@ def register(
     app.add_handler(CallbackQueryHandler(_cb_batch_exec, pattern=r"^bx:"))
     app.add_handler(CallbackQueryHandler(_cb_delete_message, pattern=r"^dm:"))
     app.add_handler(CallbackQueryHandler(_cb_qwen_confirm, pattern=r"^qw:"))
+    app.add_handler(CallbackQueryHandler(_cb_newtask_col, pattern=r"^ntc:"))
+    app.add_handler(CallbackQueryHandler(_cb_deletecol, pattern=r"^dco:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
 
@@ -179,6 +190,20 @@ def _actor(update: Update) -> str:
     if not user:
         return ""
     return user.full_name or user.username or str(user.id)
+
+
+async def _is_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    user = update.effective_user
+    if not chat or not user:
+        return True
+    if chat.type == "private":
+        return True
+    try:
+        member = await ctx.bot.get_chat_member(chat.id, user.id)
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
 
 
 def _format_daily_report(actions: list[dict], date_str: str) -> str:
@@ -318,11 +343,17 @@ async def _cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "  /sync               — обновить кэш из YouGile\n"
         "  /status             — колонки доски\n"
         "  /add [название]     — создать задачу в Бэклоге\n"
-        "  /delete <кадр>      — удалить задачу\n"
+        "  /newtask [название] — создать задачу с выбором колонки\n"
+        "  /rename <кадр> <название> — переименовать задачу\n"
+        "  /delete <кадр>      — удалить задачу (только администраторы)\n"
         "  /comment <кадр> <текст>\n"
         "  /desc <кадр> <текст>\n"
         "  /assign <кадр>      — назначить исполнителя\n"
-        "  /deadline <кадр> <ДД.ММ.ГГГГ>"
+        "  /deadline <кадр> <ДД.ММ.ГГГГ>\n\n"
+        "Управление колонками (только администраторы):\n"
+        "  /newcol [название]  — создать колонку\n"
+        "  /renamecol Старое|Новое — переименовать\n"
+        "  /deletecol <название>   — удалить"
     )
 
 
@@ -401,10 +432,186 @@ async def _do_add_task(update: Update, ctx: ContextTypes.DEFAULT_TYPE, title: st
         await msg.edit_text(f"Ошибка создания: {e}")
 
 
+# ── /newtask ───────────────────────────────────────────────────────────────
+
+async def _cmd_newtask(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    title = " ".join(ctx.args) if ctx.args else ""
+    if title:
+        await _newtask_show_columns(update, ctx, title)
+    else:
+        ctx.user_data["pending"] = {"type": _P_NEWTASK}
+        await update.message.reply_text("Введите название новой задачи:")
+
+
+async def _newtask_show_columns(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, title: str
+) -> None:
+    engine = _engine(ctx)
+    cols = engine.get_column_names()
+    if not cols:
+        await update.message.reply_text("Нет данных о колонках — выполните /sync")
+        return
+    token = _store(ctx, {"name": title, "actor": _actor(update)})
+    buttons: list[list[InlineKeyboardButton]] = []
+    for i, col in enumerate(cols):
+        cb = f"ntc:{token}:{i}"
+        if len(cb.encode()) <= 64:
+            buttons.append([InlineKeyboardButton(col, callback_data=cb)])
+    buttons.append([InlineKeyboardButton("✕ Отмена", callback_data=_CB_CANCEL)])
+    await update.message.reply_text(
+        f"Задача: «{title}»\nВыберите колонку:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _cb_newtask_col(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    payload = query.data[len(_CB_NEWTASK_COL):]
+    token, _, idx_str = payload.rpartition(":")
+    idx = int(idx_str)
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла, повторите /newtask.")
+        return
+    title = data["name"]
+    actor = data.get("actor", "")
+    engine = _engine(ctx)
+    cols = engine.get_column_names()
+    if idx >= len(cols):
+        await query.edit_message_text("Ошибка: колонка не найдена, выполните /sync и повторите.")
+        return
+    col_name = cols[idx]
+    try:
+        task = await engine.create_task_in_column(title, col_name, actor=actor)
+        await query.edit_message_text(
+            f"Задача «{title}» создана в «{col_name}».\nid: {task.get('id', '?')}"
+        )
+    except Exception as e:
+        await query.edit_message_text(f"Ошибка: {e}")
+
+
+# ── /rename ────────────────────────────────────────────────────────────────
+
+async def _cmd_rename(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    args = ctx.args
+    if not args or not args[0].isdigit() or len(args) < 2:
+        await update.message.reply_text("Использование: /rename <кадр> <новое название>")
+        return
+    frame = int(args[0])
+    new_title = " ".join(args[1:])
+    try:
+        await _engine(ctx).rename_frame_task(frame, new_title, actor=_actor(update))
+        await update.message.reply_text(f"Кадр {frame}: название изменено на «{new_title}»")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+# ── /newcol, /renamecol, /deletecol ───────────────────────────────────────
+
+async def _cmd_newcol(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    if not await _is_admin(update, ctx):
+        await update.message.reply_text("Управление колонками доступно только администраторам.")
+        return
+    name = " ".join(ctx.args) if ctx.args else ""
+    if name:
+        await _do_create_column(update, ctx, name)
+    else:
+        ctx.user_data["pending"] = {"type": _P_NEWCOL}
+        await update.message.reply_text("Введите название новой колонки:")
+
+
+async def _do_create_column(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, name: str
+) -> None:
+    try:
+        col = await _engine(ctx).create_column_op(name)
+        await update.message.reply_text(
+            f"Колонка «{name}» создана.\nid: {col.get('id', '?')}"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+async def _cmd_renamecol(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    if not await _is_admin(update, ctx):
+        await update.message.reply_text("Управление колонками доступно только администраторам.")
+        return
+    full = " ".join(ctx.args) if ctx.args else ""
+    sep = "|" if "|" in full else ("→" if "→" in full else None)
+    if not sep:
+        await update.message.reply_text(
+            "Использование: /renamecol <старое название>|<новое название>\n"
+            "Пример: /renamecol Бэклог|Входящие"
+        )
+        return
+    old, _, new = full.partition(sep)
+    old, new = old.strip(), new.strip()
+    if not old or not new:
+        await update.message.reply_text("Укажите оба названия через «|».")
+        return
+    try:
+        await _engine(ctx).rename_column_op(old, new)
+        await update.message.reply_text(f"Колонка «{old}» переименована в «{new}».")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+async def _cmd_deletecol(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_allowed(update, ctx):
+        return
+    if not await _is_admin(update, ctx):
+        await update.message.reply_text("Удаление колонок доступно только администраторам.")
+        return
+    name = " ".join(ctx.args) if ctx.args else ""
+    if not name:
+        await update.message.reply_text("Использование: /deletecol <название колонки>")
+        return
+    token = _store(ctx, {"col": name})
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Да, удалить", callback_data=f"dco:{token}"),
+        InlineKeyboardButton("Отмена", callback_data=_CB_CANCEL),
+    ]])
+    await update.message.reply_text(
+        f"Удалить колонку «{name}»?\n"
+        "⚠️ Задачи внутри останутся в YouGile, но без привязки к этой колонке.",
+        reply_markup=kb,
+    )
+
+
+async def _cb_deletecol(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    token = query.data[len(_CB_DELCOL):]
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла.")
+        return
+    col_name = data["col"]
+    try:
+        await _engine(ctx).delete_column_op(col_name)
+        await query.edit_message_text(f"Колонка «{col_name}» удалена.")
+    except Exception as e:
+        await query.edit_message_text(f"Ошибка: {e}")
+
+
 # ── /delete ────────────────────────────────────────────────────────────────
 
 async def _cmd_delete(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_allowed(update, ctx):
+        return
+    if not await _is_admin(update, ctx):
+        await update.message.reply_text("Удаление задач доступно только администраторам группы.")
         return
     if not ctx.args or not ctx.args[0].lstrip("-").isdigit():
         await update.message.reply_text("Использование: /delete <номер_кадра>")
@@ -685,6 +892,49 @@ _CANCEL_PHRASES = {
 }
 
 
+async def _maybe_qwen_fallback(
+    update: Update,
+    ctx: ContextTypes.DEFAULT_TYPE,
+    text: str,
+    fallback_text: str = "",
+) -> None:
+    """Call Qwen automatically when the parser can't understand a message.
+
+    If Qwen is not configured, shows fallback_text (if provided) or stays silent.
+    """
+    qwen: QwenClient | None = ctx.bot_data.get("qwen")
+    if not qwen:
+        if fallback_text:
+            await update.message.reply_text(fallback_text)
+        return
+
+    msg = await update.message.reply_text("Анализирую через Qwen...")
+    try:
+        events = await qwen.parse_all(text)
+    except LLMError as e:
+        logger.warning("Qwen auto-fallback error: %s", e)
+        reply = fallback_text or "Не понял команду."
+        await msg.edit_text(f"{reply}\n\nQwen тоже не смог распознать.")
+        return
+
+    valid = [ev for ev in events if ev.frames or ev.action == "add"]
+    if not valid:
+        reply = fallback_text or (
+            "Не понял команду.\n\nПопробуй:\n"
+            "  Кадр 5 готово\n"
+            "  Кадры 1–10 у заказчика\n"
+            "  /help — все команды"
+        )
+        await msg.edit_text(reply)
+        return
+
+    n = len(valid)
+    await msg.edit_text(
+        f"Qwen нашёл {n} {'команду' if n == 1 else 'команды' if n < 5 else 'команд'}:"
+    )
+    await _show_batch_checklist(update, ctx, valid, header="Выбери нужные и нажми Выполнить:")
+
+
 # ── message handler ────────────────────────────────────────────────────────
 
 async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -718,6 +968,14 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await _do_add_task(update, ctx, text.strip())
             return
 
+        if ptype == _P_NEWTASK:
+            await _newtask_show_columns(update, ctx, text.strip())
+            return
+
+        if ptype == _P_NEWCOL:
+            await _do_create_column(update, ctx, text.strip())
+            return
+
         if ptype == _P_COMMENT:
             await _do_comment(update, ctx, pending.get("frames", []), text.strip())
             return
@@ -748,6 +1006,15 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     all_events = parse_all(text)
     if len(all_events) >= 2:
+        # Strip delete events for non-admins in group chats
+        if any(ev.action == "delete" for ev in all_events):
+            if not await _is_admin(update, ctx):
+                all_events = [ev for ev in all_events if ev.action != "delete"]
+                if not all_events:
+                    await update.message.reply_text(
+                        "Удаление задач доступно только администраторам группы."
+                    )
+                    return
         await _show_batch_checklist(update, ctx, all_events)
         return
 
@@ -771,6 +1038,9 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(
                 "Укажите кадр для удаления. Пример: «Удалить кадр 5»"
             )
+            return
+        if not await _is_admin(update, ctx):
+            await update.message.reply_text("Удаление задач доступно только администраторам группы.")
             return
         await _show_batch_checklist(update, ctx, [event])
         return
@@ -806,12 +1076,16 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Default: move action
     if not event.has_frames:
+        await _maybe_qwen_fallback(update, ctx, text)
         return
 
     if not event.has_status:
-        await update.message.reply_text(
-            f"Нашёл кадры: {fmt_frames(event.frames)} — но не понял статус.\n"
-            "Уточните: «у заказчика», «на правках», «в работе», «готово»..."
+        await _maybe_qwen_fallback(
+            update, ctx, text,
+            fallback_text=(
+                f"Нашёл кадры: {fmt_frames(event.frames)} — но не понял статус.\n"
+                "Уточните: «у заказчика», «на правках», «в работе», «готово»..."
+            ),
         )
         return
 
@@ -1217,6 +1491,16 @@ async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
     if not to_run:
         await query.edit_message_text("Ничего не выбрано.")
         return
+
+    # Admin check: strip delete events for non-admins in group chats
+    if any(ev.action == "delete" for ev in to_run):
+        if not await _is_admin(update, ctx):
+            to_run = [ev for ev in to_run if ev.action != "delete"]
+            if not to_run:
+                await query.edit_message_text(
+                    "Удаление задач доступно только администраторам группы."
+                )
+                return
 
     await query.edit_message_text(f"Выполняю {len(to_run)} команд...")
 
