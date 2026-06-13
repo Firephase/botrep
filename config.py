@@ -16,6 +16,8 @@ class Config:
     qwen_model: str = "qwen-plus"
     groq_api_key: str = ""
     groq_model: str = "whisper-large-v3-turbo"
+    groq_proxy: str = ""
+    qwen_proxy: str = ""
     report_chat_id: int = 0
     report_time: str = "18:00"
 
@@ -36,6 +38,8 @@ class Config:
             qwen_model=os.getenv("QWEN_MODEL", "qwen-plus"),
             groq_api_key=os.getenv("GROQ_API_KEY", ""),
             groq_model=os.getenv("GROQ_MODEL", "whisper-large-v3-turbo"),
+            groq_proxy=os.getenv("GROQ_PROXY", ""),
+            qwen_proxy=os.getenv("QWEN_PROXY", ""),
             report_chat_id=int(os.getenv("REPORT_CHAT_ID", "0") or "0"),
             report_time=os.getenv("REPORT_TIME", "18:00"),
         )

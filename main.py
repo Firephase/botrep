@@ -128,8 +128,8 @@ def main() -> None:
     db = Database(cfg.db_path)
     yougile = YouGileClient(cfg.yougile_api_key)
     engine = SyncEngine(yougile, db, cfg.yougile_board_id, cfg.yougile_project_key)
-    qwen = QwenClient(cfg.qwen_api_key, cfg.qwen_model) if cfg.qwen_api_key else None
-    stt = GroqSTT(cfg.groq_api_key, cfg.groq_model) if cfg.groq_api_key else None
+    qwen = QwenClient(cfg.qwen_api_key, cfg.qwen_model, proxy=cfg.qwen_proxy) if cfg.qwen_api_key else None
+    stt = GroqSTT(cfg.groq_api_key, cfg.groq_model, proxy=cfg.groq_proxy) if cfg.groq_api_key else None
 
     async def on_startup(_app: Application) -> None:
         await db.init()

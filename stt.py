@@ -13,9 +13,10 @@ class STTError(Exception):
 
 
 class GroqSTT:
-    def __init__(self, api_key: str, model: str = "whisper-large-v3-turbo") -> None:
+    def __init__(self, api_key: str, model: str = "whisper-large-v3-turbo", proxy: str = "") -> None:
         self._key = api_key
         self._model = model
+        self._proxy = proxy
         self._http: httpx.AsyncClient | None = None
 
     async def start(self) -> None:
@@ -23,6 +24,7 @@ class GroqSTT:
             base_url=_BASE,
             headers={"Authorization": f"Bearer {self._key}"},
             timeout=60,
+            **({"proxy": self._proxy} if self._proxy else {}),
         )
 
     async def stop(self) -> None:
