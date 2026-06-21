@@ -16,10 +16,11 @@ STATUS_ALIASES: dict[str, list[str]] = {
     "На правках": [
         "правки", "поправить", "надо исправить", "исправить",
         "поправки", "на правках", "надо поправить", "доработать",
-        "надо изменить", "на доработке",
+        "надо изменить", "на доработке", "доработки", "на доработки",
+        "на доработку", "на доработках",
     ],
     "Готово": [
-        "готово", "принято", "апрув", "approved",
+        "готово", "готов", "готовы", "принято", "апрув", "approved",
         "финал", "финальный", "сдано",
     ],
     "На внутренней проверке": [
@@ -156,8 +157,10 @@ def parse_all(text: str) -> list[ParsedEvent]:
     if total_markers <= 1:
         return [parse_message(text)]
 
-    # Try splitting by natural clause separators
-    clauses = [c.strip() for c in re.split(r'[,;\n]|\s+и\s+', text) if c.strip()]
+    # Split by newlines and semicolons only — NOT by comma, because commas are
+    # used inside frame number lists ("кадры 202,203"). Single-line comma-separated
+    # commands fall through to _parse_by_markers which handles them via position.
+    clauses = [c.strip() for c in re.split(r'[;\n]|\s+и\s+', text) if c.strip()]
 
     if len(clauses) > 1:
         parsed = [parse_message(c) for c in clauses]

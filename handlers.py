@@ -1,10 +1,11 @@
+import io
 import logging
 import random
 import re
 import string
 from datetime import date, datetime, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -30,6 +31,8 @@ _CB_BATCH_EXEC = "bx:"    # bx:{token}
 _CB_DEL_MSG = "dm:"       # dm:{token}:{index}
 _CB_NEWTASK_COL = "ntc:"  # ntc:{token}:{col_index}
 _CB_DELCOL = "dco:"       # dco:{token}
+_CB_NF_CREATE = "nfc:"    # nfc:{token} — create not-found frames
+_CB_NF_SYNC = "nfs:"      # nfs:{token} — sync and retry
 _CB_SKIP = "sk"
 _CB_CANCEL = "cx"
 
@@ -128,11 +131,13 @@ def register(
     engine: SyncEngine,
     allowed_chat_ids: list[int],
     large_range_limit: int,
+    silent_mode: bool = False,
 ) -> None:
     app.bot_data.update(
         engine=engine,
         allowed=set(allowed_chat_ids),
         limit=large_range_limit,
+        silent_mode=silent_mode,
     )
 
     app.add_handler(CommandHandler("start", _cmd_start))
@@ -170,6 +175,8 @@ def register(
     app.add_handler(CallbackQueryHandler(_cb_qwen_confirm, pattern=r"^qw:"))
     app.add_handler(CallbackQueryHandler(_cb_newtask_col, pattern=r"^ntc:"))
     app.add_handler(CallbackQueryHandler(_cb_deletecol, pattern=r"^dco:"))
+    app.add_handler(CallbackQueryHandler(_cb_not_found_create, pattern=r"^nfc:"))
+    app.add_handler(CallbackQueryHandler(_cb_not_found_sync, pattern=r"^nfs:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
 
@@ -249,6 +256,23 @@ def _format_daily_report(actions: list[dict], date_str: str) -> str:
     return "\n".join(lines)
 
 
+def _build_report_file(actions: list[dict], date_str: str) -> bytes:
+    action_labels = {
+        "move": "Перемещение", "add": "Создание", "delete": "Удаление",
+        "comment": "Комментарий", "describe": "Описание",
+        "rename": "Переименование", "photo": "Фото",
+    }
+    lines = [f"Отчёт YouGile-бота за {date_str}", "=" * 50]
+    for a in actions:
+        ts = str(a.get("created_at", ""))[:19]
+        label = action_labels.get(a["action"], a["action"])
+        frames = f"  кадры {a['frames']}" if a.get("frames") else ""
+        details = f"  ({a['details']})" if a.get("details") else ""
+        actor = f"  [{a['actor']}]" if a.get("actor") else ""
+        lines.append(f"{ts}  {label}{frames}{details}{actor}")
+    return "\n".join(lines).encode("utf-8")
+
+
 async def daily_report_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id: int = ctx.bot_data.get("report_chat_id", 0)
     if not chat_id:
@@ -259,6 +283,11 @@ async def daily_report_job(ctx: ContextTypes.DEFAULT_TYPE) -> None:
     text = _format_daily_report(actions, date_str)
     try:
         await ctx.bot.send_message(chat_id=chat_id, text=text)
+        if actions:
+            data = _build_report_file(actions, date_str)
+            bio = io.BytesIO(data)
+            bio.name = f"report_{date_str.replace('.', '-')}.txt"
+            await ctx.bot.send_document(chat_id=chat_id, document=bio)
     except Exception as e:
         logger.error("Не удалось отправить сводку: %s", e)
 
@@ -407,6 +436,11 @@ async def _cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     actions = await _engine(ctx).get_today_actions()
     date_str = date.today().strftime("%d.%m.%Y")
     await update.message.reply_text(_format_daily_report(actions, date_str))
+    if actions:
+        data = _build_report_file(actions, date_str)
+        bio = io.BytesIO(data)
+        bio.name = f"report_{date_str.replace('.', '-')}.txt"
+        await update.message.reply_document(document=bio)
 
 
 # ── /add ───────────────────────────────────────────────────────────────────
@@ -892,6 +926,118 @@ _CANCEL_PHRASES = {
 }
 
 
+async def _react(update: Update, emoji: str) -> None:
+    try:
+        await update.message.set_reaction([ReactionTypeEmoji(emoji)])
+    except Exception:
+        pass
+
+
+async def _execute_silently(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, events: list[ParsedEvent]
+) -> None:
+    """Execute events without checklists. React 👍 on success, send errors as text."""
+    engine = _engine(ctx)
+    actor = _actor(update)
+    errors: list[str] = []
+
+    for ev in events:
+        try:
+            if ev.action == "move":
+                await engine.process_event(ev, actor=actor)
+            elif ev.action == "delete":
+                if not await _is_admin(update, ctx):
+                    errors.append("Удаление: нет прав администратора")
+                    continue
+                for frame in ev.frames:
+                    await engine.delete_frame(frame, actor=actor)
+            elif ev.action == "add":
+                if ev.frames:
+                    for frame in ev.frames:
+                        await engine.create_task_with_title(f"Кадр {frame:02d}", actor=actor)
+                else:
+                    title = ev.extra_text or ev.comment or "Новая задача"
+                    await engine.create_task_with_title(title, actor=actor)
+            elif ev.action == "comment_only":
+                for frame in ev.frames:
+                    await engine.comment_frame(frame, ev.extra_text or ev.comment, actor=actor)
+            elif ev.action == "describe":
+                if ev.frames:
+                    await engine.update_description(
+                        ev.frames[0], ev.extra_text or ev.comment, actor=actor
+                    )
+        except Exception as e:
+            errors.append(f"[{_event_label(ev)}]: {e}")
+
+    if errors:
+        await update.message.reply_text("Ошибки:\n" + "\n".join(errors))
+    else:
+        await _react(update, "👍")
+
+
+def _not_found_keyboard(token: str, frames_str: str, with_retry: bool = False) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(f"➕ Создать кадры {frames_str}", callback_data=f"nfc:{token}")],
+    ]
+    if with_retry:
+        rows.append([InlineKeyboardButton("🔄 Синхронизировать и повторить", callback_data=f"nfs:{token}")])
+    rows.append([InlineKeyboardButton("❌ Пропустить", callback_data=_CB_SKIP)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _cb_not_found_create(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    token = query.data[len(_CB_NF_CREATE):]
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла.")
+        return
+    engine = _engine(ctx)
+    results: list[str] = []
+    for frame in data["frames"]:
+        title = f"Кадр {frame:02d}"
+        try:
+            await engine.create_task_with_title(title)
+            results.append(f"✓ {title} создан")
+        except Exception as e:
+            results.append(f"✗ {title}: {e}")
+    await query.edit_message_text("\n".join(results) or "Готово")
+
+
+async def _cb_not_found_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    token = query.data[len(_CB_NF_SYNC):]
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла.")
+        return
+    engine = _engine(ctx)
+    try:
+        n = await engine.sync_board()
+    except Exception as e:
+        await query.edit_message_text(f"Ошибка синхронизации: {e}")
+        return
+
+    ev_data = data.get("event")
+    if not ev_data:
+        await query.edit_message_text(f"Синхронизировано ({n} кадров). Повторите команду.")
+        return
+
+    event = ParsedEvent(
+        frames=ev_data["frames"],
+        target_status=ev_data["target_status"],
+        action=ev_data["action"],
+        comment=ev_data["comment"],
+        extra_text=ev_data["extra_text"],
+    )
+    result = await engine.process_event(event)
+    await query.edit_message_text(result.summary())
+
+
 async def _maybe_qwen_fallback(
     update: Update,
     ctx: ContextTypes.DEFAULT_TYPE,
@@ -1005,16 +1151,25 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
     all_events = parse_all(text)
-    if len(all_events) >= 2:
-        # Strip delete events for non-admins in group chats
-        if any(ev.action == "delete" for ev in all_events):
-            if not await _is_admin(update, ctx):
-                all_events = [ev for ev in all_events if ev.action != "delete"]
-                if not all_events:
+    silent: bool = ctx.bot_data.get("silent_mode", False)
+
+    # Strip delete events for non-admins
+    if any(ev.action == "delete" for ev in all_events):
+        if not await _is_admin(update, ctx):
+            all_events = [ev for ev in all_events if ev.action != "delete"]
+            if not all_events:
+                if not silent:
                     await update.message.reply_text(
                         "Удаление задач доступно только администраторам группы."
                     )
-                    return
+                return
+
+    if silent:
+        # Silent mode: execute immediately, no checklists
+        await _execute_silently(update, ctx, all_events)
+        return
+
+    if len(all_events) >= 2:
         await _show_batch_checklist(update, ctx, all_events)
         return
 
@@ -1038,9 +1193,6 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(
                 "Укажите кадр для удаления. Пример: «Удалить кадр 5»"
             )
-            return
-        if not await _is_admin(update, ctx):
-            await update.message.reply_text("Удаление задач доступно только администраторам группы.")
             return
         await _show_batch_checklist(update, ctx, [event])
         return
@@ -1090,7 +1242,7 @@ async def _on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     limit: int = ctx.bot_data["limit"]
-    if len(event.frames) > limit:
+    if len(event.frames) > limit and not ctx.bot_data.get("silent_mode"):
         token = _store(ctx, {"text": text})
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("Да, обновить", callback_data=f"mv:{token}"),
@@ -1115,13 +1267,27 @@ async def _apply_move(
         f"Обновляю {len(event.frames)} кадров → {event.target_status}..."
     )
     result = await engine.process_event(event, actor=_actor(update))
-    await msg.edit_text(result.summary())
 
-    if result.updated:
-        await _show_assign_keyboard(
-            update, ctx, result.updated,
-            f"Назначить исполнителя на {fmt_frames(result.updated)}?"
+    if result.not_found:
+        nf_str = fmt_frames(result.not_found)
+        token = _store(ctx, {
+            "frames": result.not_found,
+            "event": {
+                "frames": event.frames, "target_status": event.target_status,
+                "action": event.action, "comment": event.comment, "extra_text": event.extra_text,
+            },
+        })
+        await msg.edit_text(
+            result.summary() + f"\n\nКадры {nf_str} не найдены. Что делать?",
+            reply_markup=_not_found_keyboard(token, nf_str, with_retry=True),
         )
+    else:
+        await msg.edit_text(result.summary())
+        if result.updated:
+            await _show_assign_keyboard(
+                update, ctx, result.updated,
+                f"Назначить исполнителя на {fmt_frames(result.updated)}?"
+            )
 
 
 # ── callback handlers ──────────────────────────────────────────────────────
@@ -1506,12 +1672,14 @@ async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
 
     engine = _engine(ctx)
     parts: list[str] = []
+    not_found_all: list[int] = []
 
     for ev in to_run:
         try:
             if ev.action == "move":
                 res = await engine.process_event(ev)
                 parts.append(res.summary())
+                not_found_all.extend(res.not_found)
 
             elif ev.action == "delete":
                 lines: list[str] = []
@@ -1524,11 +1692,11 @@ async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
                 if ev.frames:
                     for frame in ev.frames:
                         t = f"Кадр {frame:02d}"
-                        task = await engine.create_task_with_title(t)
+                        await engine.create_task_with_title(t)
                         parts.append(f"Создано: «{t}»")
                 else:
                     title = ev.extra_text or ev.comment or "Новая задача"
-                    task = await engine.create_task_with_title(title)
+                    await engine.create_task_with_title(title)
                     parts.append(f"Создано: «{title}»")
 
             elif ev.action == "comment_only":
@@ -1546,6 +1714,15 @@ async def _cb_batch_exec(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None
             parts.append(f"Ошибка [{label}]: {e}")
 
     await query.edit_message_text("\n\n".join(parts) or "Готово")
+
+    if not_found_all:
+        nf = sorted(set(not_found_all))
+        nf_str = fmt_frames(nf)
+        token = _store(ctx, {"frames": nf})
+        await query.message.reply_text(
+            f"Кадры {nf_str} не найдены. Что делать?",
+            reply_markup=_not_found_keyboard(token, nf_str),
+        )
 
 
 async def _cb_skip(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

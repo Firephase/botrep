@@ -20,6 +20,7 @@ class Config:
     qwen_proxy: str = ""
     report_chat_id: int = 0
     report_time: str = "18:00"
+    silent_mode: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -42,6 +43,7 @@ class Config:
             qwen_proxy=os.getenv("QWEN_PROXY", ""),
             report_chat_id=int(os.getenv("REPORT_CHAT_ID", "0") or "0"),
             report_time=os.getenv("REPORT_TIME", "18:00"),
+            silent_mode=os.getenv("SILENT_MODE", "").lower() in ("1", "true", "yes"),
         )
 
     def validate(self) -> None:

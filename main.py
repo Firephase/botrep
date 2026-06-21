@@ -166,7 +166,7 @@ def main() -> None:
         .post_shutdown(on_shutdown)
         .build()
     )
-    register(app, engine, cfg.allowed_chat_ids, cfg.large_range_limit)
+    register(app, engine, cfg.allowed_chat_ids, cfg.large_range_limit, cfg.silent_mode)
 
     if cfg.report_chat_id:
         app.bot_data["report_chat_id"] = cfg.report_chat_id
