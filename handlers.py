@@ -33,6 +33,7 @@ _CB_NEWTASK_COL = "ntc:"  # ntc:{token}:{col_index}
 _CB_DELCOL = "dco:"       # dco:{token}
 _CB_NF_CREATE = "nfc:"    # nfc:{token} — create not-found frames
 _CB_NF_SYNC = "nfs:"      # nfs:{token} — sync and retry
+_CB_DID_YOU_MEAN = "dym:" # dym:{token}:{col_key} — voice ambiguity column pick
 _CB_SKIP = "sk"
 _CB_CANCEL = "cx"
 
@@ -177,6 +178,7 @@ def register(
     app.add_handler(CallbackQueryHandler(_cb_deletecol, pattern=r"^dco:"))
     app.add_handler(CallbackQueryHandler(_cb_not_found_create, pattern=r"^nfc:"))
     app.add_handler(CallbackQueryHandler(_cb_not_found_sync, pattern=r"^nfs:"))
+    app.add_handler(CallbackQueryHandler(_cb_did_you_mean, pattern=r"^dym:"))
     app.add_handler(CallbackQueryHandler(_cb_skip, pattern=rf"^{_CB_SKIP}$"))
     app.add_handler(CallbackQueryHandler(_cb_cancel, pattern=rf"^{_CB_CANCEL}$"))
 
@@ -838,36 +840,43 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     stt: GroqSTT | None = ctx.bot_data.get("stt")
     if not stt:
-        return  # молча игнорируем если GROQ_API_KEY не задан
+        return
 
     voice = update.message.voice or update.message.audio
     if not voice:
         return
 
-    msg = await update.message.reply_text("Распознаю голосовое...")
+    silent: bool = ctx.bot_data.get("silent_mode", False)
+
+    if not silent:
+        msg = await update.message.reply_text("Распознаю голосовое...")
+
     try:
         tg_file = await ctx.bot.get_file(voice.file_id)
-        import io as _io
-        buf = _io.BytesIO()
+        buf = io.BytesIO()
         await tg_file.download_to_memory(buf)
         audio_bytes = buf.getvalue()
-
         text = await stt.transcribe(audio_bytes)
     except STTError as e:
-        await msg.edit_text(f"Ошибка распознавания: {e}")
+        if silent:
+            await update.message.reply_text(f"Ошибка распознавания: {e}")
+        else:
+            await msg.edit_text(f"Ошибка распознавания: {e}")
         return
     except Exception as e:
-        await msg.edit_text(f"Ошибка загрузки аудио: {e}")
+        if silent:
+            await update.message.reply_text(f"Ошибка загрузки аудио: {e}")
+        else:
+            await msg.edit_text(f"Ошибка загрузки аудио: {e}")
         return
 
     if not text:
-        await msg.edit_text("Не удалось распознать речь.")
+        if not silent:
+            await msg.edit_text("Не удалось распознать речь.")
         return
 
-    await msg.edit_text(f"Распознано: «{text}»\nОбрабатываю...")
-
-    # Если в тексте есть "квен" / "qwen" — передаём в LLM
-    if re.search(r"кв[эе]н|qwen", text, re.IGNORECASE):
+    # Explicit Qwen trigger word — only in non-silent mode
+    if not silent and re.search(r"кв[эе]н|qwen", text, re.IGNORECASE):
         clean = re.sub(r"кв[эе]н|qwen", "", text, flags=re.IGNORECASE).strip()
         qwen: QwenClient | None = ctx.bot_data.get("qwen")
         if not qwen:
@@ -878,45 +887,69 @@ async def _on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         except LLMError as e:
             await msg.edit_text(f"Распознано: «{text}»\n\nОшибка Qwen: {e}")
             return
-
         valid = [ev for ev in events if ev.frames or ev.action == "add"]
         if not valid:
             await msg.edit_text(f"Распознано: «{text}»\n\nQwen не нашёл команд.")
             return
-
         n = len(valid)
         await msg.edit_text(
             f"Распознано: «{text}»\n\n"
             f"Qwen распознал {n} {'команду' if n == 1 else 'команды' if n < 5 else 'команд'}:"
         )
-        await _show_batch_checklist(
-            update, ctx, valid,
-            header="Выбери нужные и нажми Выполнить:",
-        )
+        await _show_batch_checklist(update, ctx, valid, header="Выбери нужные и нажми Выполнить:")
         return
 
     all_events = parse_all(text)
-
-    if len(all_events) >= 2:
-        await msg.edit_text(f"Распознано: «{text}»")
-        await _show_batch_checklist(update, ctx, all_events)
-        return
-
     event = all_events[0] if all_events else parse_message(text)
 
-    if not event.has_frames:
-        await msg.edit_text(f"Распознано: «{text}»\n\nКадры не найдены — уточните.")
-        return
+    if silent:
+        # ── silent mode ──────────────────────────────────────────────────────
+        if len(all_events) >= 2:
+            await _execute_silently(update, ctx, all_events)
+            return
 
-    if not event.has_status:
-        await msg.edit_text(
-            f"Распознано: «{text}»\n\n"
-            f"Кадры: {fmt_frames(event.frames)} — статус не понят."
-        )
-        return
+        if not event.has_frames:
+            # Nothing understood — try Qwen as last resort
+            qwen = ctx.bot_data.get("qwen")
+            if qwen:
+                try:
+                    qwen_events = await qwen.parse_all(text)
+                    valid = [ev for ev in qwen_events if ev.frames or ev.action == "add"]
+                    if valid:
+                        await _execute_silently(update, ctx, valid)
+                        return
+                except LLMError:
+                    pass
+            # Give up silently
+            return
 
-    result = await _engine(ctx).process_event(event)
-    await msg.edit_text(f"Распознано: «{text}»\n\n{result.summary()}")
+        if not event.has_status:
+            # Frames found but no status — ask "did you mean?"
+            await _show_did_you_mean(update, ctx, event.frames, text)
+            return
+
+        await _execute_silently(update, ctx, [event])
+
+    else:
+        # ── normal mode ──────────────────────────────────────────────────────
+        await msg.edit_text(f"Распознано: «{text}»\nОбрабатываю...")
+
+        if len(all_events) >= 2:
+            await msg.edit_text(f"Распознано: «{text}»")
+            await _show_batch_checklist(update, ctx, all_events)
+            return
+
+        if not event.has_frames:
+            await msg.edit_text(f"Распознано: «{text}»\n\nКадры не найдены — уточните.")
+            return
+
+        if not event.has_status:
+            await msg.edit_text(f"Распознано: «{text}»")
+            await _show_did_you_mean(update, ctx, event.frames, text)
+            return
+
+        result = await _engine(ctx).process_event(event)
+        await msg.edit_text(f"Распознано: «{text}»\n\n{result.summary()}")
 
 
 _CANCEL_PHRASES = {
@@ -1033,6 +1066,63 @@ async def _cb_not_found_sync(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     )
     result = await engine.process_event(event)
     await query.edit_message_text(result.summary())
+
+
+async def _show_did_you_mean(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+    frames: list[int], transcribed_text: str,
+) -> None:
+    """Show column-selection keyboard when voice frames are found but status is missing."""
+    token = _store(ctx, {"frames": frames, "text": transcribed_text})
+    cols = list(STATUS_ALIASES.keys())
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(cols), 2):
+        row = [
+            InlineKeyboardButton(cols[j], callback_data=f"{_CB_DID_YOU_MEAN}{token}:{j}")
+            for j in range(i, min(i + 2, len(cols)))
+        ]
+        rows.append(row)
+    rows.append([InlineKeyboardButton("❌ Пропустить", callback_data=_CB_SKIP)])
+    kb = InlineKeyboardMarkup(rows)
+    frames_str = fmt_frames(frames)
+    await update.message.reply_text(
+        f"Вы имели в виду: кадры {frames_str} →  ?",
+        reply_markup=kb,
+    )
+
+
+async def _cb_did_you_mean(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    payload = query.data[len(_CB_DID_YOU_MEAN):]
+    token, col_idx_str = payload.rsplit(":", 1)
+    data = _load(ctx, token)
+    _drop(ctx, token)
+    if not data:
+        await query.edit_message_text("Сессия истекла.")
+        return
+
+    cols = list(STATUS_ALIASES.keys())
+    try:
+        col = cols[int(col_idx_str)]
+    except (ValueError, IndexError):
+        await query.edit_message_text("Неверный выбор.")
+        return
+
+    frames = data["frames"]
+    event = ParsedEvent(
+        frames=frames,
+        target_status=col,
+        action="move",
+        comment=data.get("text", ""),
+        confidence=0.9,
+    )
+    engine = _engine(ctx)
+    try:
+        result = await engine.process_event(event)
+        await query.edit_message_text(result.summary())
+    except Exception as e:
+        await query.edit_message_text(f"Ошибка: {e}")
 
 
 async def _maybe_qwen_fallback(
