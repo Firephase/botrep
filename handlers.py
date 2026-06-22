@@ -5,7 +5,7 @@ import re
 import string
 from datetime import date, datetime, timezone
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -927,10 +927,7 @@ _CANCEL_PHRASES = {
 
 
 async def _react(update: Update, emoji: str) -> None:
-    try:
-        await update.message.set_reaction([ReactionTypeEmoji(emoji)])
-    except Exception:
-        pass
+    pass  # reactions require PTB ≥ 20.8; silent mode just stays quiet on success
 
 
 async def _execute_silently(
